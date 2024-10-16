@@ -3,8 +3,16 @@ use crate::{
     sharding::{SeqModelSpec, ShardSpec, ShardStrategy, ShardingType},
 };
 
+pub struct Profile {
+    pub compute_ns: u64,
+    pub static_memory: u64,
+    pub peak_activation_memory: u64,
+    pub micro_collectives: Vec<Collective>,
+    pub batch_collectives: Vec<Collective>,
+}
+
 pub trait Operation<M: ShardSpec> {
-    fn compute_ms(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> u32;
+    fn compute_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> u64;
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> (u64, u64);
     fn micro_batch_network_ops(
         &self,
@@ -22,10 +30,10 @@ pub struct Linear1DTpAllGather {
     pub output_size: u32,
 }
 
-pub const FLOP_NS: f64 = 1e6;
+pub const FLOP_US: f64 = 0.5 * 312e6;
 
 impl<M: ShardSpec> Operation<M> for Linear1DTpAllGather {
-    fn compute_ms(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> u32 {
+    fn compute_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> u64 {
         let SeqModelSpec {
             batch,
             sequence,
@@ -33,17 +41,20 @@ impl<M: ShardSpec> Operation<M> for Linear1DTpAllGather {
             ..
         } = strategy.axis_splits();
 
-        let input_size = self.input_size;
-        let batch_per_leaf = axes.batch / batch;
-        let sequence_per_leaf = axes.sequence / sequence;
-        let output_per_leaf = self.output_size / feature;
+        let input_size = self.input_size as u64;
+        let batch_per_leaf = (axes.batch / batch) as u64;
+        let sequence_per_leaf = (axes.sequence / sequence) as u64;
+        let output_per_leaf = (self.output_size / feature) as u64;
 
-        debug_assert_eq!(input_size, axes.feature);
+        let m = batch_per_leaf * sequence_per_leaf;
+        let k = input_size;
+        let n = output_per_leaf;
+        debug_assert_eq!(input_size, axes.feature as u64);
         // The operation is [B*S, F] x [F, O]
         // Because we have all the inputs, but only compute a subset of the output activations
         // so we have [B/b * S/s, F] x [F, O/f] which is 2 * B/b * S/s * F * O/f flops
-        let flops = 2 * batch_per_leaf * sequence_per_leaf * input_size * output_per_leaf;
-        return ((flops as f64 / FLOP_NS).ceil() as u32).max(1);
+        let flops = 2 * m * n * k;
+        return ((flops as f64 / FLOP_US).ceil() as u64).max(1);
     }
 
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> (u64, u64) {
@@ -59,8 +70,9 @@ impl<M: ShardSpec> Operation<M> for Linear1DTpAllGather {
         let sequence_per_leaf = axes.sequence / sequence;
         let output_per_leaf = self.output_size / feature;
 
-        let weight_memory = input_size as u64 * output_per_leaf as u64;
-        let activation_memory = batch_per_leaf as u64 * sequence_per_leaf as u64 * self.output_size as u64;
+        let weight_memory = 2 * input_size as u64 * output_per_leaf as u64;
+        let activation_memory =
+            2 * batch_per_leaf as u64 * sequence_per_leaf as u64 * self.output_size as u64;
         (weight_memory, activation_memory)
     }
 
@@ -77,24 +89,21 @@ impl<M: ShardSpec> Operation<M> for Linear1DTpAllGather {
             feature,
             ..
         } = strategy.axis_splits();
-        let batch_per_leaf = axes.batch / batch;
-        let sequence_per_leaf = axes.sequence / sequence;
-        let output_per_leaf = self.output_size / feature;
+        let batch_per_leaf = (axes.batch / batch) as u64;
+        let sequence_per_leaf = (axes.sequence / sequence) as u64;
+        let output_per_leaf = (self.output_size / feature) as u64;
         let leaf_act_size = batch_per_leaf * sequence_per_leaf * output_per_leaf;
 
         // Find the last tier that uses tp and calculate the number of leaf nodes
-        if let Some(max_tier) = strategy
-            .pieces
-            .as_ref()
-            .iter()
-            .rposition(|&x| x == ShardingType::Tensor)
+        if let Some(tp_tier) = strategy.top_tier_for(ShardingType::Tensor)
         {
-            vec![Collective::all_gather(leaf_act_size, max_tier as u32)]
+            // The network tier is indexed from 0 at the leaf tier
+            vec![Collective::all_gather(leaf_act_size, tp_tier as u32)]
         } else {
             Default::default()
         }
     }
-    
+
     fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> bool {
         let SeqModelSpec {
             batch,
@@ -105,7 +114,6 @@ impl<M: ShardSpec> Operation<M> for Linear1DTpAllGather {
         let batch_per_leaf = axes.batch / batch;
         let sequence_per_leaf = axes.sequence / sequence;
         let output_per_leaf = self.output_size / feature;
-        batch_per_leaf == 0 || sequence_per_leaf == 0 || output_per_leaf == 0
+        batch_per_leaf != 0 && sequence_per_leaf != 0 && output_per_leaf != 0
     }
-    
 }

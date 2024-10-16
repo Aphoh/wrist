@@ -1,27 +1,28 @@
-use network::NaiveCollectiveMeasurer;
+use network::RegressionNetwork;
 
+pub mod combinations;
 pub mod data;
-mod tests;
 pub mod models;
 pub(crate) mod network;
 pub mod ops;
 pub mod sharding;
 pub mod solver;
-pub mod combinations;
+mod tests;
 
 fn main() {
-
-
     let batch = 2048;
     let sequence = 2048;
-    let feature = 4096;
-    let layers = 20;
-    let leaf_memory = 1 << 34; // 0.5 GB
-    let n_tiers = 9; // 16k nodes
+    let feature = 8192; 
+    let layers = 40;
+    let leaf_memory = 80e9 as u64; // 80 GB
+    let n_tiers = 4;
+
+    let model_size = 2 * (feature  as u64) * (feature as u64) * (layers as u64);
+    println!("Model size: {:.2}GB", (model_size as f64) / 1e9);
+    println!("Leaf memory: {:.2}GB", (leaf_memory as f64) / 1e9);
 
     let naive_mlp = models::naive_mlp::NaiveMLP::new(batch, sequence, feature, layers, leaf_memory);
-    let measurer = NaiveCollectiveMeasurer{};
-    let network = network::Network::new(n_tiers, measurer);
-    let strategy = solver::DenseSolver::solve(&naive_mlp, &network);
+    let net= RegressionNetwork::from_file(n_tiers, "regression.csv");
+    let strategy = solver::DenseSolver::solve(&naive_mlp, &net);
     println!("Strategy: {:?}", strategy);
 }

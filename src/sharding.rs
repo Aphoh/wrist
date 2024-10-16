@@ -35,13 +35,35 @@ pub enum ShardingType {
     Tensor = 40,
 }
 
+impl ShardingType {
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            ShardingType::Data => "D",
+            ShardingType::Pipeline => "P",
+            ShardingType::Sequence => "S",
+            ShardingType::Tensor => "T",
+        }
+    }
+}
+
 pub trait ShardSpec: AsMut<[ShardingType]> + AsRef<[ShardingType]> {}
 impl<M: AsMut<[ShardingType]> + AsRef<[ShardingType]>> ShardSpec for M {}
 
 #[derive(Debug, Clone)]
 pub struct ShardStrategy<M: ShardSpec> {
-    // This is a sorted sequence of sharding types, each representing a branching of
+    // This is a sorted sequence of sharding types
+    // The order of the types is the order of the tiers
+    // So the 0 element represents the leaf tier
     pub pieces: M,
+}
+
+impl<M: ShardSpec> std::fmt::Display for ShardStrategy<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for piece in self.pieces.as_ref() {
+            write!(f, "{}", piece.short_name())?;
+        }
+        Ok(())
+    }
 }
 
 impl<M: ShardSpec> ShardStrategy<M> {
@@ -49,7 +71,7 @@ impl<M: ShardSpec> ShardStrategy<M> {
         types
             .as_ref()
             .windows(2)
-            .all(|w| w[0] <= w[1])
+            .all(|w| w[0] >= w[1])
             .then(|| Self::new_unchecked(types))
     }
 
@@ -68,5 +90,17 @@ impl<M: ShardSpec> ShardStrategy<M> {
             spec.expand_by(*piece);
         }
         spec
+    }
+
+    pub fn top_tier_for(&self, sharding: ShardingType) -> Option<u32> {
+        self.pieces
+            .as_ref()
+            .iter()
+            .rposition(|&x| x == sharding)
+            .map(|x| x as u32)
+    }
+
+    pub fn num_accelerators_for_type(&self, sharding: ShardingType) -> Option<u32> {
+        self.top_tier_for(sharding).map(|x| 2u32.pow(x + 1))
     }
 }

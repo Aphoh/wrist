@@ -68,9 +68,9 @@ pub fn combinations_with_replacement<'a, T>(
 pub fn n_combinations(n: usize, r: usize) -> u128 {
     let mut num = 1u128;
     let mut denom = 1u128;
-    for i in 0..r {
-        num *= (n + i) as u128;
-        denom *= (i + 1) as u128;
+    for i in 1..r {
+        num *= (n + i - 1) as u128;
+        denom *= i as u128;
     }
     num / denom
 }
