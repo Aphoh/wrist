@@ -18,38 +18,41 @@ def compute_log_log_regressions_with_min_time(data):
     # Loop over unique GPU groups and operations
     gpu_groups = data['group_name'].unique()
     operations = data['operation'].unique()
+    transposes = data['transpose'].unique()
 
     for gpu_group in gpu_groups:
         for operation in operations:
-            # Get the cleaned data for this GPU group and operation
-            operation_cleaned_data = data[(data['group_name'] == gpu_group) & (data['operation'] == operation)]
-            
-            # Prepare the cleaned data for log-log linear regression
-            X_clean = np.log2(operation_cleaned_data['data_size_mb'].values).reshape(-1, 1)
-            y_clean = np.log2(operation_cleaned_data['duration_sec'].values)
+            for transpose in transposes:
+                # Get the cleaned data for this GPU group and operation
+                operation_cleaned_data = data[(data['group_name'] == gpu_group) & (data['operation'] == operation) & (data['transpose'] == transpose)]
+                
+                # Prepare the cleaned data for log-log linear regression
+                X_clean = np.log2(operation_cleaned_data['data_size_mb'].values).reshape(-1, 1)
+                y_clean = np.log2(operation_cleaned_data['duration_sec'].values)
 
-            # Calculate the mean time for the smallest data element
-            smallest_data_size = operation_cleaned_data['data_size_mb'].min()
-            smallest_data_mean_time = operation_cleaned_data[operation_cleaned_data['data_size_mb'] == smallest_data_size]['duration_sec'].mean()
+                # Calculate the mean time for the smallest data element
+                smallest_data_size = operation_cleaned_data['data_size_mb'].min()
+                smallest_data_mean_time = operation_cleaned_data[operation_cleaned_data['data_size_mb'] == smallest_data_size]['duration_sec'].mean()
 
-            # Only perform regression if there are enough points
-            if len(X_clean) > 1:
-                # Perform the linear regression on log-log scale
-                reg = LinearRegression().fit(X_clean, y_clean)
-                r_squared = reg.score(X_clean, y_clean)
-                coef = reg.coef_[0]
-                intercept = reg.intercept_
+                # Only perform regression if there are enough points
+                if len(X_clean) > 1:
+                    # Perform the linear regression on log-log scale
+                    reg = LinearRegression().fit(X_clean, y_clean)
+                    r_squared = reg.score(X_clean, y_clean)
+                    coef = reg.coef_[0]
+                    intercept = reg.intercept_
 
-                # Store the result with the cleaned mean time for the smallest data element
-                results.append({
-                    'gpu_group': gpu_group,
-                    'operation': operation,
-                    'log_coef': coef,
-                    'log_intercept': intercept,
-                    'log_r_squared': r_squared,
-                    'smallest_data_size': smallest_data_size,
-                    'smallest_data_mean_time': smallest_data_mean_time
-                })
+                    # Store the result with the cleaned mean time for the smallest data element
+                    results.append({
+                        'gpu_group': gpu_group,
+                        'operation': operation,
+                        'log_coef': coef,
+                        'log_intercept': intercept,
+                        'log_r_squared': r_squared,
+                        'smallest_data_size': smallest_data_size,
+                        'smallest_data_mean_time': smallest_data_mean_time,
+                        'transpose': transpose
+                    })
 
     # Return results as a DataFrame
     return pd.DataFrame(results)
