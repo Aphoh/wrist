@@ -1,18 +1,18 @@
 use crate::{
     network::Network,
-    ops::{Linear1DTpAllGather, Operation},
+    ops::{DoubleLinearReductionParallel, MemoryProfile, Operation},
     sharding::{SeqModelSpec, ShardSpec, ShardStrategy, ShardingType},
     solver::Solveable,
 };
 
-pub struct NaiveMLP {
+pub struct NaiveMLPForward {
     axes: SeqModelSpec,
     leaf_memory: u64,
-    ops: Vec<Linear1DTpAllGather>,
+    ops: Vec<DoubleLinearReductionParallel>,
 }
 
-impl NaiveMLP {
-    pub fn new(batch: u32, sequence: u32, feature: u32, layers: u32, leaf_memory: u64) -> Self {
+impl NaiveMLPForward {
+    pub fn new(batch: u64, sequence: u64, feature: u64, layers: u64, leaf_memory: u64) -> Self {
         let axes = SeqModelSpec {
             batch,
             sequence,
@@ -21,12 +21,13 @@ impl NaiveMLP {
         };
         let mut ops = Vec::new();
         for _ in 0..layers {
-            ops.push(Linear1DTpAllGather {
+            ops.push(DoubleLinearReductionParallel {
                 input_size: feature,
+                hidden_size: 4 * feature,
                 output_size: feature,
             });
         }
-        NaiveMLP {
+        NaiveMLPForward {
             axes,
             ops,
             leaf_memory,
@@ -35,18 +36,15 @@ impl NaiveMLP {
 
     // TODO: I should probably account for buffers for collectives too right?
     pub fn validate<S: ShardSpec>(&self, strategy: &ShardStrategy<S>) -> Option<u64> {
-        let mut weight_mem = 0u64;
-        let mut max_act_mem = 0u64;
+        let mut profile = MemoryProfile::default();
         for op in &self.ops {
             if !op.validate(&self.axes, strategy) {
                 println!("Invalid strategy {} for op", strategy);
                 return None;
             }
-            let (w, a) = op.memory_bytes(&self.axes, strategy);
-            weight_mem += w;
-            max_act_mem = max_act_mem.max(a);
+            profile = op.memory_bytes(&self.axes, strategy).combine(&profile)
         }
-        let max_mem = weight_mem + max_act_mem;
+        let max_mem = profile.total();
         if self.leaf_memory < max_mem {
             println!(
                 "Invalid strategy {}, exceeds leaf memory: {:.2}GB",
@@ -64,34 +62,32 @@ impl NaiveMLP {
         }
     }
 
-    pub fn forward_us<S: ShardSpec, M: Network>(
+    pub fn micro_batch_us<S: ShardSpec, M: Network>(
         &self,
         strategy: &ShardStrategy<S>,
         network: &M,
     ) -> u64 {
+        let mut forwards = vec![];
         self.ops
             .iter()
             .map(|op| {
-                let compute = op.compute_us(&self.axes, strategy);
-                let collectives = op.micro_batch_network_ops(&self.axes, strategy);
+                let compute = op.forward_us(&self.axes, strategy);
+                forwards.push(compute);
+                let collectives = op.micro_batch_fwd_network_ops(&self.axes, strategy);
                 let network_us = network.measure(collectives);
-                return compute + network_us;
+                compute + network_us
             })
-            .sum()
+            .sum::<u64>()
     }
 }
 
-impl Solveable for NaiveMLP {
-    fn objective<S: ShardSpec, M: Network>(
-        &self,
-        strategy: &ShardStrategy<S>,
-        network: &M,
-    ) -> u64 {
-        self.forward_us(strategy, network)
+impl Solveable for NaiveMLPForward {
+    fn objective<S: ShardSpec, M: Network>(&self, strategy: &ShardStrategy<S>, network: &M) -> u64 {
+        self.micro_batch_us(strategy, network)
     }
 
     fn validate<S: ShardSpec>(&self, strategy: &ShardStrategy<S>) -> Option<u64> {
-        NaiveMLP::validate(self, strategy)
+        NaiveMLPForward::validate(self, strategy)
     }
 
     fn supported_shardings(&self) -> Vec<ShardingType> {

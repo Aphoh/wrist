@@ -1,9 +1,11 @@
+use crate::network::{Collective, CollectiveType};
+
 #[derive(Clone)]
 pub struct SeqModelSpec {
-    pub batch: u32,
-    pub sequence: u32,
-    pub feature: u32,
-    pub layers: u32,
+    pub batch: u64,
+    pub sequence: u64,
+    pub feature: u64,
+    pub layers: u64,
 }
 
 impl SeqModelSpec {
@@ -92,15 +94,34 @@ impl<M: ShardSpec> ShardStrategy<M> {
         spec
     }
 
-    pub fn top_tier_for(&self, sharding: ShardingType) -> Option<u32> {
-        self.pieces
-            .as_ref()
-            .iter()
-            .rposition(|&x| x == sharding)
-            .map(|x| x as u32)
+    
+    pub fn num_gpus_in_sharding_groups(&self, sharding: ShardingType) -> Option<u32> {
+        // This is just 2^the number of times it appears in the sharding group
+        let count: u32 = self.pieces.as_ref().iter().map(|x| (*x == sharding) as u32).sum();
+        (count > 0).then(|| 1 << count)
     }
 
-    pub fn num_accelerators_for_type(&self, sharding: ShardingType) -> Option<u32> {
-        self.top_tier_for(sharding).map(|x| 2u32.pow(x + 1))
+    pub fn stride_of_sharding_groups(&self, sharding: ShardingType) -> u32 {
+        // This is 2^the number of elements that come before the first instance of the sharding type
+        let mut stride = 1;
+        for piece in self.pieces.as_ref() {
+            if piece != &sharding {
+                stride *= 2;
+            } else {
+                break;
+            }
+        }
+        stride
+    }
+
+    pub fn collective(&self, stype: ShardingType, ctype: CollectiveType, piece_bytes: u64) -> Option<Collective> {
+        let n_gpus = self.num_gpus_in_sharding_groups(stype)?;
+        let stride = self.stride_of_sharding_groups(stype);
+        Some(Collective {
+            ctype,
+            stride,
+            piece_bytes,
+            n_gpus,
+        })
     }
 }

@@ -10,7 +10,7 @@ pub mod solver;
 mod tests;
 
 fn main() {
-    let batch = 2048;
+    let micro_batch = 16;
     let sequence = 2048;
     let feature = 8192; 
     let layers = 40;
@@ -21,8 +21,8 @@ fn main() {
     println!("Model size: {:.2}GB", (model_size as f64) / 1e9);
     println!("Leaf memory: {:.2}GB", (leaf_memory as f64) / 1e9);
 
-    let naive_mlp = models::naive_mlp::NaiveMLP::new(batch, sequence, feature, layers, leaf_memory);
-    let net= RegressionNetwork::from_file(n_tiers, "regression.csv");
+    let naive_mlp = models::naive_mlp::NaiveMLPForward::new(micro_batch, sequence, feature, layers, leaf_memory);
+    let net= RegressionNetwork::from_file(n_tiers, "regression_strided.csv");
     let strategy = solver::DenseSolver::solve(&naive_mlp, &net);
     println!("Strategy: {:?}", strategy);
 }

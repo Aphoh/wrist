@@ -7,79 +7,55 @@ pub enum CollectiveType {
     Gather,
     AllReduce,
     Reduce,
+    Ring,
 }
 
 #[derive(Eq, PartialEq, Debug, Hash, Clone, PartialOrd, Ord)]
 pub struct Collective {
-    ctype: CollectiveType,
-    piece_bytes: u64,
-    tier: u32,
+    pub ctype: CollectiveType,
+    /// Stride is the spacing between leaves in the tree
+    /// so for a 8 node tree, 3 tiers:
+    /// Stride 2, Tier 2: [0, 2, 4, 6], [1, 3, 5, 7]
+    /// Stride 1, Tier 2: [0, 1, 2, 3], [4, 5, 6, 7]
+    /// Stride 4, Tier 1: [0, 4], [1, 5], [2, 6], [3, 7]
+    /// Stride 2, Tier 1: [0, 2], [1, 3], [4, 6], [5, 7]
+    /// Stride 1, Tier 1: [0, 1], [2, 3], [4, 5], [6, 7]
+    pub stride: u32,
+    pub piece_bytes: u64,
+    pub n_gpus: u32,
 }
 
 impl Collective {
-    pub fn all_gather(piece_bytes: u64, tier: u32) -> Self {
+    pub fn all_gather(piece_bytes: u64, tier: u32, stride: u32) -> Self {
         Self {
             ctype: CollectiveType::AllGather,
+            stride,
             piece_bytes,
-            tier,
+            n_gpus: tier,
         }
     }
 
-    pub fn reduce(piece_bytes: u64, tier: u32) -> Self {
+    pub fn all_reduce(piece_bytes: u64, tier: u32, stride: u32) -> Self {
+        Self {
+            ctype: CollectiveType::AllReduce,
+            stride,
+            piece_bytes,
+            n_gpus: tier,
+        }
+    }
+
+    pub fn reduce(piece_bytes: u64, tier: u32, stride: u32) -> Self {
         Self {
             ctype: CollectiveType::Reduce,
+            stride,
             piece_bytes,
-            tier,
+            n_gpus: tier,
         }
     }
 }
 pub trait Network {
     fn measure<C: AsRef<[Collective]>>(&self, collectives: C) -> u64;
     fn n_tiers(&self) -> u32;
-
-    fn accelerators_by_tier(&self) -> Vec<u32> {
-        (0..self.n_tiers())
-            .map(|a| self.num_accelerators(a))
-            .collect()
-    }
-
-    fn num_accelerators(&self, tier: u32) -> u32 {
-        return 2u32.pow(tier + 1);
-    }
-}
-
-pub struct NaiveManualNetwork {
-    n_tiers: u32,
-}
-impl NaiveManualNetwork {
-    pub fn new(n_tiers: u32) -> Self {
-        NaiveManualNetwork { n_tiers }
-    }
-}
-impl Network for NaiveManualNetwork {
-    fn measure<C: AsRef<[Collective]>>(&self, collectives: C) -> u64 {
-        collectives
-            .as_ref()
-            .iter()
-            .map(|c| match c.ctype {
-                CollectiveType::AllGather => {
-                    let latency = 100 * (self.n_tiers - c.tier);
-                    let each_comm = (c.piece_bytes as f64) / ((1 << 27) as f64);
-                    let all_comms = each_comm * ((self.n_tiers - c.tier + 1) as f64);
-                    let rounded = all_comms.ceil() as u64;
-                    latency as u64 + u64::try_from(rounded).expect("uh oh")
-                }
-                CollectiveType::Gather => 64 * 2u64.pow(c.tier),
-                CollectiveType::AllReduce => 64 * 2u64.pow(c.tier),
-                CollectiveType::Reduce => 64 * c.tier as u64,
-            })
-            .max() 
-            .unwrap_or_default()
-    }
-
-    fn n_tiers(&self) -> u32 {
-        self.n_tiers
-    }
 }
 
 pub struct LogLogRegression {
@@ -88,6 +64,7 @@ pub struct LogLogRegression {
     min: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct RegressionEntry {
     gpu_group: u32,
@@ -97,10 +74,35 @@ pub struct RegressionEntry {
     log_r_squared: f64,
     smallest_data_mean_time: f64,
     smallest_data_size: f64,
+    stride: u32,
+}
+
+impl RegressionEntry {
+    fn key(&self) -> RegressionKey {
+        RegressionKey {
+            ctype: match self.operation.as_str() {
+                "all_gather" => CollectiveType::AllGather,
+                "gather" => CollectiveType::Gather,
+                "all_reduce" => CollectiveType::AllReduce,
+                "reduce" => CollectiveType::Reduce,
+                "ring" => CollectiveType::Ring,
+                _ => panic!("Unknown operation type"),
+            },
+            stride: self.stride,
+            n_gpus: self.gpu_group,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RegressionKey{
+    ctype: CollectiveType,
+    stride: u32,
+    n_gpus: u32,
 }
 
 pub struct RegressionNetwork {
-    regressions: BTreeMap<(CollectiveType, u32), LogLogRegression>,
+    regressions: BTreeMap<RegressionKey, LogLogRegression>,
     n_tiers: u32,
 }
 
@@ -115,15 +117,7 @@ impl RegressionNetwork {
                 log_coeff: record.log_coef,
                 min: record.smallest_data_mean_time,
             };
-            let ctype = match record.operation.as_str() {
-                "all_gather" => CollectiveType::AllGather,
-                "gather" => CollectiveType::Gather,
-                "all_reduce" => CollectiveType::AllReduce,
-                "reduce" => CollectiveType::Reduce,
-                _ => panic!("Unknown operation type"),
-            };
-            let key = (ctype, record.gpu_group);
-            regressions.insert(key, regression);
+            regressions.insert(record.key(), regression);
         }
 
         RegressionNetwork {
@@ -135,16 +129,25 @@ impl RegressionNetwork {
 
 impl Network for RegressionNetwork {
     fn measure<C: AsRef<[Collective]>>(&self, collectives: C) -> u64 {
-        let mut total_latency_us= 0u64;
+        let mut total_latency_us = 0u64;
         for c in collectives.as_ref() {
-            let n_gpus = self.num_accelerators(c.tier);
-            let regression = self.regressions.get(&(c.ctype, n_gpus)).unwrap();
+            let key = RegressionKey {
+                ctype: c.ctype,
+                stride: c.stride,
+                n_gpus: c.n_gpus,
+            };
+            let regression = self.regressions.get(&key);
+            if regression.is_none() {
+                println!("No regression for {:?}", key);
+                return 0;
+            }
+            let regression = regression.unwrap();
             let piece_log = (c.piece_bytes as f64).log2();
             let latency_s = (regression.log_intercept + regression.log_coeff * piece_log)
                 .exp2()
                 .min(regression.min);
             debug_assert!(latency_s.is_finite() && latency_s > 0.0);
-            //println!("{:?} ngpu: {} data: {: >4}mb {:.4}ms", c.ctype, n_gpus, c.piece_bytes / (1<<20), latency_s * 1e3);
+            //println!("{:?} N{: >2} S{: >2} data: {: >4}mb {:.4}ms", c.ctype, c.n_gpus, c.stride, c.piece_bytes / (1<<20), latency_s * 1e3);
             total_latency_us += (1e6 * latency_s) as u64;
         }
         total_latency_us

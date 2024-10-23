@@ -16,15 +16,15 @@ def compute_log_log_regressions_with_min_time(data):
     results = []
     
     # Loop over unique GPU groups and operations
-    gpu_groups = data['group_name'].unique()
+    gpu_groups = data['num_gpus'].unique()
     operations = data['operation'].unique()
-    transposes = data['transpose'].unique()
+    strides = data['stride'].unique()
 
     for gpu_group in gpu_groups:
         for operation in operations:
-            for transpose in transposes:
+            for stride in strides:
                 # Get the cleaned data for this GPU group and operation
-                operation_cleaned_data = data[(data['group_name'] == gpu_group) & (data['operation'] == operation) & (data['transpose'] == transpose)]
+                operation_cleaned_data = data[(data['num_gpus'] == gpu_group) & (data['operation'] == operation) & (data['stride'] == stride)]
                 
                 # Prepare the cleaned data for log-log linear regression
                 X_clean = np.log2(operation_cleaned_data['data_size_mb'].values).reshape(-1, 1)
@@ -51,7 +51,7 @@ def compute_log_log_regressions_with_min_time(data):
                         'log_r_squared': r_squared,
                         'smallest_data_size': smallest_data_size,
                         'smallest_data_mean_time': smallest_data_mean_time,
-                        'transpose': transpose
+                        'stride': str(stride).lower(),
                     })
 
     # Return results as a DataFrame
@@ -62,7 +62,7 @@ def main(input_csv, output_csv):
     data = pd.read_csv(input_csv)
 
     # Remove outliers from the data
-    data_cleaned = data.groupby(['group_name', 'operation', 'data_size_mb']).apply(lambda x: remove_outliers(x, 'duration_sec')).reset_index(drop=True)
+    data_cleaned = data.groupby(['num_gpus', 'operation', 'data_size_mb']).apply(lambda x: remove_outliers(x, 'duration_sec')).reset_index(drop=True)
 
     # Compute log-log linear regression results with the smallest data time
     regression_results = compute_log_log_regressions_with_min_time(data_cleaned)
