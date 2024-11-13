@@ -2,18 +2,23 @@ use crate::network::{Collective, CollectiveType};
 use crate::ops::{MemoryProfile, Operation};
 use crate::sharding::SeqModelSpec;
 use crate::sharding::ShardStrategy;
-use crate::sharding::ShardingType; // Add this line to import the Operation trait
+use crate::sharding::ShardingType;
 
-pub struct DoubleLinearReductionParallel {
+use super::{ComputeUnit, Kernel}; // Add this line to import the Operation trait
+
+pub struct MLP {
     pub input_size: u64,
-    pub hidden_size: u64,
+    pub intermediate_size: u64,
     pub output_size: u64,
 }
 
-pub const FLOP_US: f64 = 0.5 * 312e6;
-
-impl Operation for DoubleLinearReductionParallel {
-    fn forward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> u64 {
+impl Operation for MLP {
+    fn forward(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        downstream_collective: Option<Collective>,
+    ) -> (Vec<ComputeUnit>, Option<Collective>) {
         let SeqModelSpec {
             batch,
             sequence,
@@ -21,16 +26,133 @@ impl Operation for DoubleLinearReductionParallel {
             ..
         } = strategy.axis_splits();
 
-        let leaf_hidden_size = self.hidden_size / feature;
+        let leaf_intermediate_size = self.intermediate_size / feature;
+        let leaf_batch_size = axes.batch / batch;
+        let leaf_seq_size = axes.sequence / sequence;
+        let w1_bytes = 2 * self.input_size * leaf_intermediate_size;
+        let w2_bytes = 2 * self.output_size * leaf_intermediate_size;
+
+        let output_act_bytes = 2 * leaf_batch_size * leaf_seq_size * self.output_size;
+
+        let compute = vec![
+            ComputeUnit::new(
+                vec![Kernel::MatMul {
+                    m: leaf_batch_size * leaf_seq_size,
+                    n: self.intermediate_size,
+                    k: self.input_size,
+                }],
+                strategy.collective(
+                    // All-gather w2
+                    ShardingType::Tensor,
+                    CollectiveType::AllGather,
+                    w2_bytes,
+                ),
+            ),
+            ComputeUnit::new(
+                vec![Kernel::MatMul {
+                    m: leaf_batch_size * leaf_seq_size,
+                    n: self.output_size,
+                    k: leaf_intermediate_size,
+                }],
+                downstream_collective,
+            ),
+            ComputeUnit::new(
+                vec![],
+                strategy.collective(
+                    ShardingType::Tensor,
+                    CollectiveType::AllReduce,
+                    output_act_bytes,
+                ),
+            ),
+        ];
+        // all-gather the w1 gradients before we start
+        let downstream_collective =
+            strategy.collective(ShardingType::Data, CollectiveType::AllGather, w1_bytes / batch);
+        (compute, downstream_collective)
+    }
+
+    fn backward(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        upstream_collective: Option<Collective>,
+    ) -> (Vec<ComputeUnit>, Option<Collective>) {
+        let SeqModelSpec {
+            batch,
+            sequence,
+            feature,
+            ..
+        } = strategy.axis_splits();
+
+        let leaf_intermediate_size = self.intermediate_size / feature;
         let leaf_batch_size = axes.batch / batch;
         let leaf_seq_size = axes.sequence / sequence;
 
-        let linear_1_flops =
-            2 * leaf_batch_size * leaf_seq_size * self.input_size * leaf_hidden_size;
-        let linear_2_flops =
-            2 * leaf_batch_size * leaf_seq_size * leaf_hidden_size * self.output_size;
-        let flops = linear_1_flops + linear_2_flops;
-        return ((flops as f64 / FLOP_US).ceil() as u64).max(1);
+        let input_act_bytes = 2 * leaf_batch_size * leaf_seq_size * self.input_size;
+        let w2_bytes = 2 * self.output_size * leaf_intermediate_size;
+
+        // input -> w1 -> intermediate -> w2 -> output
+        let compute = vec![
+            // Upstream gradients are size [B*S, O]
+            // Gradient of intermediate activations (dl/doutput w2^T)
+            ComputeUnit {
+                kernels: vec![Kernel::MatMul {
+                    m: leaf_batch_size * leaf_seq_size,
+                    k: self.output_size,
+                    n: leaf_intermediate_size,
+                }],
+                collective: upstream_collective, // This is the reduce-scatter of the upstream gradients
+            },
+            // Gradient of w2 (intermediate^T dl/doutput)
+            ComputeUnit {
+                kernels: vec![
+                    Kernel::MatMul {
+                        // Compute the gradient of the intermediate activations
+                        m: leaf_intermediate_size,
+                        k: leaf_batch_size * leaf_seq_size,
+                        n: self.output_size,
+                    }, // TODO: add in the kernel for the activation backprop
+                ],
+                collective: None,
+            },
+            // Gradients are of size [B*S, I]
+            // Gradient of intermediate activations (dl/dintermediate w1^T)
+            ComputeUnit {
+                kernels: vec![Kernel::MatMul {
+                    m: leaf_batch_size * leaf_seq_size,
+                    k: leaf_intermediate_size,
+                    n: self.input_size,
+                }],
+                collective: strategy.collective(
+                    // reduce-scatter gradients
+                    ShardingType::Data,
+                    CollectiveType::ReduceScatter,
+                    w2_bytes,
+                ),
+            },
+            // Gradient of w1 (input^T dl/dintermediate)
+            ComputeUnit {
+                kernels: vec![Kernel::MatMul {
+                    // Compute the gradient of the intermediate activations
+                    m: self.input_size,
+                    k: leaf_batch_size * leaf_seq_size,
+                    n: leaf_intermediate_size,
+                }],
+                collective: strategy.collective(
+                    // tp all-reduce input gradients
+                    ShardingType::Tensor,
+                    CollectiveType::AllReduce,
+                    input_act_bytes,
+                ),
+            }, // TODO: layernorm
+        ];
+        // reduce-scatter the w1 gradients in earlier layers
+        let downstream_collective = strategy.collective(
+            ShardingType::Tensor,
+            CollectiveType::ReduceScatter,
+            2 * self.input_size * leaf_intermediate_size,
+        );
+        (compute, downstream_collective)
     }
 
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile {
@@ -41,7 +163,7 @@ impl Operation for DoubleLinearReductionParallel {
             ..
         } = strategy.axis_splits();
 
-        let leaf_hidden_size = self.hidden_size / feature;
+        let leaf_hidden_size = self.intermediate_size / feature;
         let leaf_batch_size = axes.batch / batch;
         let leaf_seq_size = axes.sequence / sequence;
 
@@ -60,30 +182,6 @@ impl Operation for DoubleLinearReductionParallel {
         }
     }
 
-    fn micro_batch_fwd_network_ops(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-    ) -> Vec<Collective> {
-        // We have to all-reduce the output activations on each tier that uses tp
-        // This should be done along the maximum tier axis with the correct number of pieces
-        let SeqModelSpec {
-            batch, sequence, ..
-        } = strategy.axis_splits();
-        let leaf_batch_size = axes.batch / batch;
-        let leaf_seq_size = axes.sequence / sequence;
-
-        let output_act_size = 2 * leaf_batch_size * leaf_seq_size * self.output_size;
-        strategy
-            .collective(
-                ShardingType::Tensor,
-                CollectiveType::AllReduce,
-                output_act_size,
-            )
-            .map(|c| vec![c])
-            .unwrap_or_default()
-    }
-
     fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool {
         let SeqModelSpec {
             batch,
@@ -95,33 +193,5 @@ impl Operation for DoubleLinearReductionParallel {
         let sequence_per_leaf = axes.sequence / sequence;
         let output_per_leaf = self.output_size / feature;
         batch_per_leaf != 0 && sequence_per_leaf != 0 && output_per_leaf != 0
-    }
-
-    fn backward_us(&self, _axes: &SeqModelSpec, _strategy: &ShardStrategy) -> Option<u64> {
-        None
-    }
-
-    fn micro_batch_bwd_network_ops(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-    ) -> Vec<Collective> {
-        // We have to all-reduce the bwd gradients on each tier that uses tp
-        // This should be done along the maximum tier axis with the correct number of pieces
-        let SeqModelSpec {
-            batch, sequence, ..
-        } = strategy.axis_splits();
-        let leaf_batch_size = axes.batch / batch;
-        let leaf_seq_size = axes.sequence / sequence;
-
-        let input_act_size = 2 * leaf_batch_size * leaf_seq_size * self.input_size;
-        strategy
-            .collective(
-                ShardingType::Tensor,
-                CollectiveType::AllReduce,
-                input_act_size,
-            )
-            .map(|c| vec![c])
-            .unwrap_or_default()
     }
 }

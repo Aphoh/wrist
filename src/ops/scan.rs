@@ -1,10 +1,11 @@
 use crate::{
+    kernels::KernelProfile,
     network::{CollectiveType, Network},
     sharding::{SeqModelSpec, ShardStrategy, ShardingType},
+    utils,
 };
 
 use super::Operation;
-
 
 pub struct ForwardBackwardStackModel<Op> {
     op: Op,
@@ -21,7 +22,11 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         strategy: &ShardStrategy,
         leaf_memory: u64,
     ) -> Option<u64> {
-        let SeqModelSpec{ layers: pp_split, batch: dp_split, ..}= strategy.axis_splits();
+        let SeqModelSpec {
+            layers: pp_split,
+            batch: dp_split,
+            ..
+        } = strategy.axis_splits();
         if axes.layers % pp_split != 0 || axes.layers / pp_split == 0 {
             return None;
         }
@@ -38,9 +43,53 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         self.op.validate(axes, strategy).then(|| profile.total())
     }
 
-    pub fn forward_backward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy, network: &impl Network) -> u64 {
-        let pp_split = strategy.axis_splits().layers;
-        let n_layers = axes.layers / pp_split;
+    pub fn forward_us(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+    ) -> u64 {
+        let n_layers = axes.layers;
+
+        // Forward pass
+        let (tail_compute, downstream) = self.op.forward(axes, strategy, None);
+        let tail_time = utils::compute_us(tail_compute, network, &KernelProfile());
+
+        if n_layers > 1 {
+            let (body_compute, _) = self.op.forward(axes, strategy, downstream);
+            let body_time = utils::compute_us(body_compute, network, &KernelProfile())
+            tail_time + (n_layers - 1) * body_time
+        } else {
+            tail_time
+        }
+    }
+
+    pub fn forward_backward_us(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+    ) -> u64 {
+        let SeqModelSpec {
+            batch,
+            sequence,
+            feature,
+            layers,
+        } = strategy.axis_splits();
+        let n_layers = axes.layers;
+
+        // Forward pass
+        let (tail_compute, downstream) = self.op.forward(axes, strategy, None);
+
+        let (body_compute, _) = self.op.forward(axes, strategy, downstream);
+
+        let tail_time = utils::compute_us(tail_compute, network, &KernelProfile());
+        let body_time = utils::compute_us(body_compute, network, &KernelProfile());
+
+        // Backward pass
+
+        // Assume we can overlap the head downstream collective with data loading or something
+
         let op_fwd = self.op.forward_us(axes, strategy);
         let op_bwd = self.op.backward_us(axes, strategy).unwrap_or(2 * op_fwd);
         let op_comm = network.measure(self.op.micro_batch_fwd_network_ops(axes, strategy));
@@ -60,7 +109,6 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
 
         return (n_layers * (op_fwd + op_comm + op_bwd + op_bwd_comm)) + comm;
     }
-
 }
 
 pub struct ForwardStackModel<Op> {
@@ -130,8 +178,5 @@ where
         network: &M,
     ) {
         let fwd_ms = self.forward_us(axes, strategy, network);
-        
-
-
     }
 }

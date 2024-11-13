@@ -86,7 +86,7 @@ impl RegressionEntry {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct RegressionKey{
+struct RegressionKey {
     ctype: CollectiveType,
     stride: u32,
     n_gpus: u32,
@@ -103,7 +103,7 @@ impl RegressionNetwork {
         let mut regressions = BTreeMap::new();
         for record in reader.deserialize() {
             let record: RegressionEntry = record.expect("Failed to parse regression entry");
-            if COLLECTIVES.contains(&record.operation.as_str()){ 
+            if COLLECTIVES.contains(&record.operation.as_str()) {
                 let regression = LogLogRegression {
                     log_intercept: record.log_intercept,
                     log_coeff: record.log_coef,

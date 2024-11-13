@@ -1,6 +1,6 @@
 use crate::{
     network::Network,
-    ops::{scan::ForwardStackModel, DoubleLinearReductionParallel},
+    ops::{scan::ForwardStackModel, MLP},
     sharding::{SeqModelSpec, ShardStrategy, ShardingType},
     solver::Solveable,
 };
@@ -8,7 +8,7 @@ use crate::{
 pub struct NaiveMLPForward {
     axes: SeqModelSpec,
     leaf_memory: u64,
-    model: ForwardStackModel<DoubleLinearReductionParallel>,
+    model: ForwardStackModel<MLP>,
 }
 
 impl NaiveMLPForward {
@@ -21,9 +21,9 @@ impl NaiveMLPForward {
         };
         NaiveMLPForward {
             axes,
-            model: ForwardStackModel::new(DoubleLinearReductionParallel {
+            model: ForwardStackModel::new(MLP {
                 input_size: feature,
-                hidden_size: 4 * feature,
+                intermediate_size: 4 * feature,
                 output_size: feature,
             }),
             leaf_memory,
@@ -41,6 +41,10 @@ impl Solveable for NaiveMLPForward {
     }
 
     fn supported_shardings(&self) -> Vec<ShardingType> {
-        vec![ShardingType::Data, ShardingType::Tensor, ShardingType::Pipeline]
+        vec![
+            ShardingType::Data,
+            ShardingType::Tensor,
+            ShardingType::Pipeline,
+        ]
     }
 }

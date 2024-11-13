@@ -1,10 +1,10 @@
-
 pub mod double_linear;
 pub mod scan;
-pub use double_linear::DoubleLinearReductionParallel;
+pub use double_linear::MLP;
 
-use crate::sharding::{ShardStrategy, SeqModelSpec};
+use crate::kernels::Kernel;
 use crate::network::Collective;
+use crate::sharding::{SeqModelSpec, ShardStrategy};
 
 #[derive(Default)]
 pub struct MemoryProfile {
@@ -28,21 +28,43 @@ impl MemoryProfile {
     }
 }
 
+#[derive(Default)]
+pub struct ComputeUnit {
+    pub kernels: Vec<Kernel>,
+    pub collective: Option<Collective>,
+}
+
+impl ComputeUnit {
+    pub fn new(kernels: Vec<Kernel>, collective: Option<Collective>) -> Self {
+        ComputeUnit {
+            kernels,
+            collective,
+        }
+    }
+
+    pub fn new_mergeable(kernels: Vec<Kernel>, collective: Option<Collective>) -> Self {
+        ComputeUnit {
+            kernels,
+            collective,
+        }
+    }
+}
+
 pub trait Operation {
-    fn forward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> u64;
-    // If the operation isn't just 2*forward, we should return a different value here
-    fn backward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> Option<u64>;
+    fn forward(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        downstream_collective: Option<Collective>,
+    ) -> (Vec<ComputeUnit>, Option<Collective>);
+
+    fn backward(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        upstream_collective: Option<Collective>,
+    ) -> (Vec<ComputeUnit>, Option<Collective>);
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile;
-    fn micro_batch_fwd_network_ops(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-    ) -> Vec<Collective>;
-    fn micro_batch_bwd_network_ops(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-    ) -> Vec<Collective>;
 
     fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool;
     // TODO: deal with batch network ops

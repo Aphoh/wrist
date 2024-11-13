@@ -67,8 +67,8 @@ impl std::fmt::Display for ShardStrategy {
 
 impl ShardStrategy {
     pub fn new(types: Vec<ShardingType>) -> Option<Self> {
-        let mut current= types.first().copied()?;
-        let mut banned  = vec![];
+        let mut current = types.first().copied()?;
+        let mut banned = vec![];
         for t in &types {
             if *t == current {
                 continue;
@@ -100,7 +100,6 @@ impl ShardStrategy {
         spec
     }
 
-    
     pub fn num_gpus_in_sharding_groups(&self, sharding: ShardingType) -> Option<u32> {
         // This is just 2^the number of times it appears in the sharding group
         let count: u32 = self.pieces.iter().map(|x| (*x == sharding) as u32).sum();
@@ -120,7 +119,12 @@ impl ShardStrategy {
         stride
     }
 
-    pub fn collective(&self, stype: ShardingType, ctype: CollectiveType, piece_bytes: u64) -> Option<Collective> {
+    pub fn collective(
+        &self,
+        stype: ShardingType,
+        ctype: CollectiveType,
+        piece_bytes: u64,
+    ) -> Option<Collective> {
         let n_gpus = self.num_gpus_in_sharding_groups(stype)?;
         let stride = self.stride_of_sharding_groups(stype);
         Some(Collective {
