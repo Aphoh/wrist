@@ -24,5 +24,9 @@ fn main() {
     let naive_mlp = models::naive_mlp::NaiveMLPForward::new(micro_batch, sequence, feature, layers, leaf_memory);
     let net= RegressionNetwork::from_file(n_tiers, "regression_strided.csv");
     let strategy = solver::DenseSolver::solve(&naive_mlp, &net);
-    println!("Strategy: {:?}", strategy);
+    if let Some(s) = strategy {
+        println!("Strategy: {}", s);
+    } else {
+        println!("No strategy found");
+    }
 }

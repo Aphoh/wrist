@@ -1,8 +1,9 @@
 
 pub mod double_linear;
+pub mod scan;
 pub use double_linear::DoubleLinearReductionParallel;
 
-use crate::sharding::{ShardStrategy, ShardSpec, SeqModelSpec};
+use crate::sharding::{ShardStrategy, SeqModelSpec};
 use crate::network::Collective;
 
 #[derive(Default)]
@@ -27,23 +28,23 @@ impl MemoryProfile {
     }
 }
 
-pub trait Operation<M: ShardSpec> {
-    fn forward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> u64;
+pub trait Operation {
+    fn forward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> u64;
     // If the operation isn't just 2*forward, we should return a different value here
-    fn backward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> Option<u64>;
-    fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> MemoryProfile;
+    fn backward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> Option<u64>;
+    fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile;
     fn micro_batch_fwd_network_ops(
         &self,
         axes: &SeqModelSpec,
-        strategy: &ShardStrategy<M>,
+        strategy: &ShardStrategy,
     ) -> Vec<Collective>;
     fn micro_batch_bwd_network_ops(
         &self,
         axes: &SeqModelSpec,
-        strategy: &ShardStrategy<M>,
+        strategy: &ShardStrategy,
     ) -> Vec<Collective>;
 
-    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> bool;
+    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool;
     // TODO: deal with batch network ops
     //fn batch_network_ops(&self, axes: SeqModelSpec, strategy: &ShardStrategy<M>) -> Vec<Collective>;
 }

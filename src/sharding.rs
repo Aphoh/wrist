@@ -48,36 +48,42 @@ impl ShardingType {
     }
 }
 
-pub trait ShardSpec: AsMut<[ShardingType]> + AsRef<[ShardingType]> {}
-impl<M: AsMut<[ShardingType]> + AsRef<[ShardingType]>> ShardSpec for M {}
-
 #[derive(Debug, Clone)]
-pub struct ShardStrategy<M: ShardSpec> {
+pub struct ShardStrategy {
     // This is a sorted sequence of sharding types
     // The order of the types is the order of the tiers
     // So the 0 element represents the leaf tier
-    pub pieces: M,
+    pub pieces: Vec<ShardingType>,
 }
 
-impl<M: ShardSpec> std::fmt::Display for ShardStrategy<M> {
+impl std::fmt::Display for ShardStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for piece in self.pieces.as_ref() {
+        for piece in &self.pieces {
             write!(f, "{}", piece.short_name())?;
         }
         Ok(())
     }
 }
 
-impl<M: ShardSpec> ShardStrategy<M> {
-    pub fn new(types: M) -> Option<Self> {
-        types
-            .as_ref()
-            .windows(2)
-            .all(|w| w[0] >= w[1])
-            .then(|| Self::new_unchecked(types))
+impl ShardStrategy {
+    pub fn new(types: Vec<ShardingType>) -> Option<Self> {
+        let mut current= types.first().copied()?;
+        let mut banned  = vec![];
+        for t in &types {
+            if *t == current {
+                continue;
+            } else {
+                if banned.contains(t) {
+                    return None;
+                }
+                banned.push(current);
+                current = *t;
+            }
+        }
+        Some(Self::new_unchecked(types))
     }
 
-    pub fn new_unchecked(types: M) -> Self {
+    pub fn new_unchecked(types: Vec<ShardingType>) -> Self {
         Self { pieces: types }
     }
 
@@ -88,7 +94,7 @@ impl<M: ShardSpec> ShardStrategy<M> {
             feature: 1,
             layers: 1,
         };
-        for piece in self.pieces.as_ref() {
+        for piece in &self.pieces {
             spec.expand_by(*piece);
         }
         spec
@@ -97,14 +103,14 @@ impl<M: ShardSpec> ShardStrategy<M> {
     
     pub fn num_gpus_in_sharding_groups(&self, sharding: ShardingType) -> Option<u32> {
         // This is just 2^the number of times it appears in the sharding group
-        let count: u32 = self.pieces.as_ref().iter().map(|x| (*x == sharding) as u32).sum();
+        let count: u32 = self.pieces.iter().map(|x| (*x == sharding) as u32).sum();
         (count > 0).then(|| 1 << count)
     }
 
     pub fn stride_of_sharding_groups(&self, sharding: ShardingType) -> u32 {
         // This is 2^the number of elements that come before the first instance of the sharding type
         let mut stride = 1;
-        for piece in self.pieces.as_ref() {
+        for piece in &self.pieces {
             if piece != &sharding {
                 stride *= 2;
             } else {

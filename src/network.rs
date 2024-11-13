@@ -4,11 +4,12 @@ use std::{collections::BTreeMap, path::Path};
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Copy, PartialOrd, Ord)]
 pub enum CollectiveType {
     AllGather,
-    Gather,
     AllReduce,
-    Reduce,
+    ReduceScatter,
     Ring,
 }
+
+const COLLECTIVES: [&'static str; 4] = ["all_gather", "all_reduce", "reduce_scatter", "ring"];
 
 #[derive(Eq, PartialEq, Debug, Hash, Clone, PartialOrd, Ord)]
 pub struct Collective {
@@ -38,15 +39,6 @@ impl Collective {
     pub fn all_reduce(piece_bytes: u64, tier: u32, stride: u32) -> Self {
         Self {
             ctype: CollectiveType::AllReduce,
-            stride,
-            piece_bytes,
-            n_gpus: tier,
-        }
-    }
-
-    pub fn reduce(piece_bytes: u64, tier: u32, stride: u32) -> Self {
-        Self {
-            ctype: CollectiveType::Reduce,
             stride,
             piece_bytes,
             n_gpus: tier,
@@ -82,9 +74,8 @@ impl RegressionEntry {
         RegressionKey {
             ctype: match self.operation.as_str() {
                 "all_gather" => CollectiveType::AllGather,
-                "gather" => CollectiveType::Gather,
                 "all_reduce" => CollectiveType::AllReduce,
-                "reduce" => CollectiveType::Reduce,
+                "reduce_scatter" => CollectiveType::ReduceScatter,
                 "ring" => CollectiveType::Ring,
                 _ => panic!("Unknown operation type"),
             },
@@ -112,12 +103,14 @@ impl RegressionNetwork {
         let mut regressions = BTreeMap::new();
         for record in reader.deserialize() {
             let record: RegressionEntry = record.expect("Failed to parse regression entry");
-            let regression = LogLogRegression {
-                log_intercept: record.log_intercept,
-                log_coeff: record.log_coef,
-                min: record.smallest_data_mean_time,
-            };
-            regressions.insert(record.key(), regression);
+            if COLLECTIVES.contains(&record.operation.as_str()){ 
+                let regression = LogLogRegression {
+                    log_intercept: record.log_intercept,
+                    log_coeff: record.log_coef,
+                    min: record.smallest_data_mean_time,
+                };
+                regressions.insert(record.key(), regression);
+            }
         }
 
         RegressionNetwork {

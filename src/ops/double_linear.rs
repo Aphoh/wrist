@@ -1,7 +1,6 @@
 use crate::network::{Collective, CollectiveType};
 use crate::ops::{MemoryProfile, Operation};
 use crate::sharding::SeqModelSpec;
-use crate::sharding::ShardSpec;
 use crate::sharding::ShardStrategy;
 use crate::sharding::ShardingType; // Add this line to import the Operation trait
 
@@ -13,8 +12,8 @@ pub struct DoubleLinearReductionParallel {
 
 pub const FLOP_US: f64 = 0.5 * 312e6;
 
-impl<M: ShardSpec> Operation<M> for DoubleLinearReductionParallel {
-    fn forward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> u64 {
+impl Operation for DoubleLinearReductionParallel {
+    fn forward_us(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> u64 {
         let SeqModelSpec {
             batch,
             sequence,
@@ -34,7 +33,7 @@ impl<M: ShardSpec> Operation<M> for DoubleLinearReductionParallel {
         return ((flops as f64 / FLOP_US).ceil() as u64).max(1);
     }
 
-    fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> MemoryProfile {
+    fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile {
         let SeqModelSpec {
             batch,
             sequence,
@@ -64,7 +63,7 @@ impl<M: ShardSpec> Operation<M> for DoubleLinearReductionParallel {
     fn micro_batch_fwd_network_ops(
         &self,
         axes: &SeqModelSpec,
-        strategy: &ShardStrategy<M>,
+        strategy: &ShardStrategy,
     ) -> Vec<Collective> {
         // We have to all-reduce the output activations on each tier that uses tp
         // This should be done along the maximum tier axis with the correct number of pieces
@@ -85,7 +84,7 @@ impl<M: ShardSpec> Operation<M> for DoubleLinearReductionParallel {
             .unwrap_or_default()
     }
 
-    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy<M>) -> bool {
+    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool {
         let SeqModelSpec {
             batch,
             sequence,
@@ -98,14 +97,14 @@ impl<M: ShardSpec> Operation<M> for DoubleLinearReductionParallel {
         batch_per_leaf != 0 && sequence_per_leaf != 0 && output_per_leaf != 0
     }
 
-    fn backward_us(&self, _axes: &SeqModelSpec, _strategy: &ShardStrategy<M>) -> Option<u64> {
+    fn backward_us(&self, _axes: &SeqModelSpec, _strategy: &ShardStrategy) -> Option<u64> {
         None
     }
 
     fn micro_batch_bwd_network_ops(
         &self,
         axes: &SeqModelSpec,
-        strategy: &ShardStrategy<M>,
+        strategy: &ShardStrategy,
     ) -> Vec<Collective> {
         // We have to all-reduce the bwd gradients on each tier that uses tp
         // This should be done along the maximum tier axis with the correct number of pieces
