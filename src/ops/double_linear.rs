@@ -41,13 +41,13 @@ impl Operation for MLP {
                     "input * w1 matmul",
                     leaf_batch_size * leaf_seq_size,
                     self.input_size,
-                    self.intermediate_size,
+                    leaf_intermediate_size,
                 ),
                 strategy.named_collective(
                     "All-gather w2",
                     ShardingType::Data,
                     CollectiveType::AllGather,
-                    w2_bytes,
+                    w2_bytes / batch,
                 ),
             ),
             ComputeUnit::single(

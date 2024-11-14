@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-#[derive(Eq, PartialEq, Debug, Hash, Clone, Copy, PartialOrd, Ord)]
+#[derive(Eq, PartialEq, Debug, Hash, Clone, Copy, PartialOrd, Ord, Serialize)]
 pub enum CollectiveType {
     AllGather,
     AllReduce,
@@ -11,7 +11,7 @@ pub enum CollectiveType {
 
 const COLLECTIVES: [&'static str; 4] = ["all_gather", "all_reduce", "reduce_scatter", "ring"];
 
-#[derive(Eq, PartialEq, Debug, Hash, Clone, PartialOrd, Ord)]
+#[derive(Eq, PartialEq, Debug, Hash, Clone, PartialOrd, Ord, Serialize)]
 pub struct Collective {
     pub ctype: CollectiveType,
     /// Stride is the spacing between leaves in the tree
@@ -26,7 +26,7 @@ pub struct Collective {
     pub n_gpus: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NamedCollective {
     pub name: String,
     pub collective: Collective,
@@ -155,10 +155,12 @@ impl Network for RegressionNetwork {
             return 0;
         }
         let regression = regression.unwrap();
-        let piece_log = (c.piece_bytes as f64).log2();
+        // We go in units of megabytes = 2^20 bytes, so we should subtract 20 and max with 0.
+        let piece_log = (c.piece_bytes as f64).log2() - 20.0;
+        let piece_log = piece_log.max(0.0);
         let latency_s = (regression.log_intercept + regression.log_coeff * piece_log)
             .exp2()
-            .min(regression.min);
+            .max(regression.min);
         (1e6 * latency_s) as u64
     }
 }

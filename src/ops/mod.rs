@@ -69,14 +69,14 @@ pub trait Operation {
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        downstream_collective: Option<NamedCollective>,
+        downstream_collective: Option<NamedCollective>, // This is normally an all-gather that the next layer needs
     ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
 
     fn backward(
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        upstream_collective: Option<NamedCollective>,
+        upstream_collective: Option<NamedCollective>, // This is normally an all-reduce of the previous step's gradients
     ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile;
 

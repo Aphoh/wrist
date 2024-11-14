@@ -13,6 +13,7 @@ pub mod solver;
 mod tests;
 pub mod tracing;
 pub mod utils;
+use serde_json;
 
 fn main() {
     let axes = SeqModelSpec {
@@ -35,6 +36,8 @@ fn main() {
         println!("Strategy: {}", s);
         let trace = naive_mlp.trace(&axes, &s, &net);
         println!("Trace: {}", trace.pretty_print());
+        let json_result = trace.to_json().unwrap();
+        std::fs::write("trace.json", json_result).expect("Unable to write file");
     } else {
         println!("No strategy found");
     }

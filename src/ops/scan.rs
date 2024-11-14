@@ -24,27 +24,26 @@ impl<Op: Operation> Traceable for ForwardBackwardStackModel<Op> {
         let mut trace = Trace::new();
         let (tail_units, tail_collective) = self.op.forward(axes, strategy, None);
         if let Some(collective) = &tail_collective {
-            trace.measure_and_add_collective(collective.clone(), network);
+            trace.measure_and_add_collective("pre fwd collective", collective.clone(), network);
         }
-        trace.measure_and_add(tail_units, &prof, network);
-
         let (body_units, _) = self.op.forward(axes, strategy, tail_collective);
 
         if axes.layers > 1 {
-            trace.measure_and_add_scan(axes.layers - 1, body_units, &prof, network);
+            trace.measure_and_add_scan("fwd main", axes.layers - 1, body_units, &prof, network);
         }
 
+        trace.measure_and_add("fwd tail", tail_units, &prof, network);
         //Backward Trace
         let (tail_units, tail_collective) = self.op.backward(axes, strategy, None);
         let (body_units, body_collective) = self.op.backward(axes, strategy, tail_collective);
-        trace.measure_and_add(tail_units, &prof, network);
+        trace.measure_and_add("bwd tail", tail_units, &prof, network);
 
         if axes.layers > 1 {
-            trace.measure_and_add_scan(axes.layers - 1, body_units, &prof, network);
+            trace.measure_and_add_scan("bwd main", axes.layers - 1, body_units, &prof, network);
         }
 
         if let Some(collective) = &body_collective {
-            trace.measure_and_add_collective(collective.clone(), network);
+            trace.measure_and_add_collective("post bwd collective", collective.clone(), network);
         }
 
         trace
@@ -83,57 +82,12 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         self.op.validate(axes, strategy).then(|| profile.total())
     }
 
-    pub fn forward_us(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-        network: &impl Network,
-    ) -> u64 {
-        let n_layers = axes.layers;
-
-        // Forward pass
-        let (tail_compute, downstream) = self.op.forward(axes, strategy, None);
-        let tail_body_time = utils::compute_us(tail_compute, network, &KernelProfile());
-
-        let tail_collective_time = network.measure_maybe(&downstream);
-        let tail_time = tail_body_time + tail_collective_time;
-        if n_layers > 1 {
-            let (body_compute, _) = self.op.forward(axes, strategy, downstream);
-            let body_time = utils::compute_us(body_compute, network, &KernelProfile());
-            tail_time + (n_layers - 1) * body_time
-        } else {
-            tail_time
-        }
-    }
-
-    pub fn backward_us(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-        network: &impl Network,
-    ) -> u64 {
-        let n_layers = axes.layers;
-
-        // Backward pass
-        let (tail_compute, downstream) = self.op.backward(axes, strategy, None);
-        let tail_body_time = utils::compute_us(tail_compute, network, &KernelProfile());
-        let tail_collective_time = network.measure_maybe(&downstream);
-        let tail_time = tail_body_time + tail_collective_time;
-        if n_layers > 1 {
-            let (body_compute, _) = self.op.backward(axes, strategy, downstream);
-            let body_time = utils::compute_us(body_compute, network, &KernelProfile());
-            tail_time + (n_layers - 1) * body_time
-        } else {
-            tail_time
-        }
-    }
-
     pub fn forward_backward_us(
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
         network: &impl Network,
     ) -> u64 {
-        self.forward_us(axes, strategy, network) + self.backward_us(axes, strategy, network)
+        self.trace(axes, strategy, network).time_us
     }
 }

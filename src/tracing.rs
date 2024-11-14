@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::{
     kernels::{KernelProfile, NamedKernel},
     network::{NamedCollective, Network},
@@ -5,7 +7,7 @@ use crate::{
     sharding::{SeqModelSpec, ShardStrategy},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MeasuredKernel {
     kernel: NamedKernel,
     time_us: u64,
@@ -18,7 +20,7 @@ impl MeasuredKernel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MeasuredCollective {
     collective: NamedCollective,
     time_us: u64,
@@ -34,23 +36,29 @@ impl MeasuredCollective {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MeasuredComputeUnit {
     kernels: Vec<MeasuredKernel>,
     collective: Option<MeasuredCollective>,
 }
 
 impl MeasuredComputeUnit {
+    pub fn time_us(&self) -> u64 {
+        let kernel_time_us: u64 = self.kernels.iter().map(|k| k.time_us).sum();
+        let collective_time_us = self.collective.as_ref().map(|c| c.time_us).unwrap_or(0);
+        kernel_time_us.max(collective_time_us)
+    }
+
     pub fn from_collective(c: NamedCollective, network: &impl Network) -> Self {
-        let collective = Some(MeasuredCollective::measure(c, network));
+        let measured = MeasuredCollective::measure(c, network);
         Self {
             kernels: Default::default(),
-            collective,
+            collective: Some(measured),
         }
     }
 
     pub fn measure(cu: ComputeUnit, prof: &KernelProfile, network: &impl Network) -> Self {
-        let kernels = cu
+        let kernels: Vec<_> = cu
             .kernels
             .into_iter()
             .map(|k| MeasuredKernel::measure(k, prof))
@@ -65,17 +73,22 @@ impl MeasuredComputeUnit {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum TraceNode {
-    Single(Vec<MeasuredComputeUnit>),
+    Single {
+        name: String,
+        cus: Vec<MeasuredComputeUnit>,
+    },
     Scan {
+        name: String,
         cus: Vec<MeasuredComputeUnit>,
         n: u64,
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Trace {
+    pub time_us: u64,
     pub nodes: Vec<TraceNode>,
 }
 
@@ -83,6 +96,7 @@ impl Trace {
     pub fn new() -> Self {
         Self {
             nodes: Default::default(),
+            time_us: 0,
         }
     }
 
@@ -92,37 +106,60 @@ impl Trace {
 
     pub fn measure_and_add(
         &mut self,
+        name: impl ToString,
         cu: Vec<ComputeUnit>,
         prof: &KernelProfile,
         network: &impl Network,
     ) {
-        let measured = cu
+        let cus: Vec<_> = cu
             .into_iter()
             .map(|cu| MeasuredComputeUnit::measure(cu, prof, network))
             .collect();
-        self.add(TraceNode::Single(measured));
+        self.time_us += cus.iter().map(|cu| cu.time_us()).sum::<u64>();
+        self.add(TraceNode::Single {
+            name: name.to_string(),
+            cus,
+        });
     }
 
     pub fn measure_and_add_scan(
         &mut self,
+        name: impl ToString,
         n: u64,
         cus: Vec<ComputeUnit>,
         prof: &KernelProfile,
         network: &impl Network,
     ) {
-        let measured = cus
+        let cus: Vec<_> = cus
             .into_iter()
             .map(|cu| MeasuredComputeUnit::measure(cu, prof, network))
             .collect();
-        self.add(TraceNode::Scan { cus: measured, n });
+        self.time_us += cus.iter().map(|cu| cu.time_us()).sum::<u64>() * n;
+        self.add(TraceNode::Scan {
+            name: name.to_string(),
+            cus,
+            n,
+        });
     }
 
-    pub fn measure_and_add_collective(&mut self, c: NamedCollective, network: &impl Network) {
+    pub fn measure_and_add_collective(
+        &mut self,
+        name: impl ToString,
+        c: NamedCollective,
+        network: &impl Network,
+    ) {
         let measured = MeasuredComputeUnit::from_collective(c, network);
-        self.add(TraceNode::Single(vec![measured]));
+        self.time_us += measured.time_us();
+        self.add(TraceNode::Single {
+            name: name.to_string(),
+            cus: vec![measured],
+        });
     }
 
-    // Need to fill this in!
+    pub fn time_us(&self) -> u64 {
+        self.time_us
+    }
+
     pub fn pretty_print(&self) -> String {
         let mut output = String::new();
 
@@ -133,12 +170,12 @@ impl Trace {
             }
 
             match node {
-                TraceNode::Single(cus) => {
-                    output.push_str(&format!("Node {}: Sequential Execution\n", i));
+                TraceNode::Single { cus, name } => {
+                    output.push_str(&format!("{}: {} seq\n", i, name));
                     Self::format_compute_units(&mut output, cus);
                 }
-                TraceNode::Scan { cus, n } => {
-                    output.push_str(&format!("Node {}: Scan (repeated {} times)\n", i, n));
+                TraceNode::Scan { name, cus, n } => {
+                    output.push_str(&format!("{}: {} scan({})\n", i, name, n));
                     Self::format_compute_units(&mut output, cus);
                 }
             }
@@ -183,6 +220,10 @@ impl Trace {
                 ));
             }
         }
+    }
+
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self)
     }
 }
 

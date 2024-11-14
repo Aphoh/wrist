@@ -2,7 +2,6 @@ import datetime
 import torch
 import torch.distributed as dist
 import argparse
-import time
 import csv
 import os
 import math
@@ -85,6 +84,7 @@ def main():
         backend="nccl", init_method="env://", timeout=datetime.timedelta(seconds=30)
     )
     dist.barrier()
+
     hostname = os.environ["HOSTNAME"]
     hostnames = [None for _ in range(world_size)]
     if rank == 0:
@@ -99,11 +99,9 @@ def main():
 
     groups = get_groups(world_size, rank, local_world_size)
     # List of data sizes in MB
-    data_sizes_mb = [2 * (2**i) for i in range(11)]  # 2MB to 2048MB
-
+    data_sizes_mb = [2 * (2**i) for i in range(11)]
     operations = ["reduce_scatter", "all_reduce", "ring", "all_gather"]
 
-    # Open CSV file per rank
     if rank == 0:
         csv_file = open(args.output, "w")
         csv_writer = csv.writer(csv_file)
@@ -118,14 +116,13 @@ def main():
             ]
         )
 
-    MAX_MEMORY_PER_PROCESS = 20 * 1024 * 1024 * 1024  # 20GB
+    MAX_MEMORY_PER_PROCESS = 20 * 1024 * 1024 * 1024 # 20gb
 
     for op in operations:
         for data_size_mb in data_sizes_mb:
-            data_size = data_size_mb * 1024 * 1024  # Convert MB to bytes
+            data_size = data_size_mb * 1024 * 1024 # convert mb to bytes
             for num_gpus, stride, group_ranks, group in groups:
                 group_size = len(group_ranks)
-                # Estimate memory required per process
                 if op in ["all_reduce", "reduce_scatter"]:
                     memory_per_process = data_size
                 elif op == "all_gather" or op == "gather":
@@ -151,27 +148,22 @@ def main():
                             flush=True,
                         )
                     dist.barrier()
-                    torch.cuda.synchronize()
-                    start_time = time.time()
+                    start_event = torch.cuda.Event(enable_timing=True)
+                    end_event = torch.cuda.Event(enable_timing=True)
+
+                    start_event.record()
                     if op == "all_reduce":
                         dist.all_reduce(tensor, group=group)
                     elif op == "reduce_scatter":
-                        output = torch.zeros(num_elements // group_size, device="cuda", dtype=torch.float16)
+                        output = torch.zeros(
+                            num_elements // group_size,
+                            device="cuda",
+                            dtype=torch.float16,
+                        )
                         dist.reduce_scatter_tensor(output, tensor, group=group)
                     elif op == "all_gather":
                         tensors = [torch.zeros_like(tensor) for _ in group_ranks]
                         dist.all_gather(tensors, tensor, group=group)
-                    elif op == "gather":
-                        if rank == group_ranks[0]:
-                            tensors = [torch.zeros_like(tensor) for _ in group_ranks]
-                            dist.gather(
-                                tensor,
-                                gather_list=tensors,
-                                dst=group_ranks[0],
-                                group=group,
-                            )
-                        else:
-                            dist.gather(tensor, dst=group_ranks[0], group=group)
                     elif op == "ring":
                         my_ind = group_ranks.index(rank)
                         next_ind = (my_ind + 1) % len(group_ranks)
@@ -194,17 +186,22 @@ def main():
 
                     else:
                         raise ValueError(f"Unknown operation {op}")
+                    end_event.record()
                     torch.cuda.synchronize()
-                    duration = time.time() - start_time
+                    duration = start_event.elapsed_time(end_event) / 1000.0  # seconds
 
-                    # Write to CSV
+                    avg_duration = torch.tensor(duration).to(device='cuda')
+                    dist.all_reduce(avg_duration, op=dist.ReduceOp.SUM)
+                    torch.cuda.synchronize()
+                    avg_duration = (avg_duration / world_size).cpu().item()
+
                     if rank == 0:
                         csv_writer.writerow(
-                            [op, data_size_mb, num_gpus, stride, sample, duration]
+                            [op, data_size_mb, num_gpus, stride, sample, avg_duration]
                         )
                         csv_file.flush()
                         print(
-                            f"N{num_gpus:02}, S{stride:02}: Data: {data_size_mb:04}MB Operation {op}, completed in {1000 * duration:.2f} ms",
+                            f"N{num_gpus:02}, S{stride:02}: Data: {data_size_mb:04}MB Operation {op}, completed in {1000 * avg_duration:.2f} ms",
                             flush=True,
                         )
                     torch.cuda.empty_cache()

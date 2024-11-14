@@ -1,4 +1,6 @@
-#[derive(Clone, Copy, Debug)]
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum Kernel {
     MatMul {
         m: u64,
@@ -18,7 +20,7 @@ pub enum Kernel {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NamedKernel {
     pub name: String,
     pub kernel: Kernel,
