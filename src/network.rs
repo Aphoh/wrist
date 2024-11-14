@@ -26,6 +26,18 @@ pub struct Collective {
     pub n_gpus: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct NamedCollective {
+    pub name: String,
+    pub collective: Collective,
+}
+
+impl AsRef<Collective> for NamedCollective {
+    fn as_ref(&self) -> &Collective {
+        &self.collective
+    }
+}
+
 impl Collective {
     pub fn all_gather(piece_bytes: u64, tier: u32, stride: u32) -> Self {
         Self {
@@ -46,7 +58,13 @@ impl Collective {
     }
 }
 pub trait Network {
-    fn measure<C: AsRef<[Collective]>>(&self, collectives: C) -> u64;
+    fn measure_maybe(&self, collective: &Option<impl AsRef<Collective>>) -> u64 {
+        collective
+            .as_ref()
+            .map(|c| self.measure_one(c.as_ref()))
+            .unwrap_or(0)
+    }
+    fn measure_one(&self, collective: &Collective) -> u64;
     fn n_tiers(&self) -> u32;
 }
 
@@ -121,32 +139,26 @@ impl RegressionNetwork {
 }
 
 impl Network for RegressionNetwork {
-    fn measure<C: AsRef<[Collective]>>(&self, collectives: C) -> u64 {
-        let mut total_latency_us = 0u64;
-        for c in collectives.as_ref() {
-            let key = RegressionKey {
-                ctype: c.ctype,
-                stride: c.stride,
-                n_gpus: c.n_gpus,
-            };
-            let regression = self.regressions.get(&key);
-            if regression.is_none() {
-                println!("No regression for {:?}", key);
-                return 0;
-            }
-            let regression = regression.unwrap();
-            let piece_log = (c.piece_bytes as f64).log2();
-            let latency_s = (regression.log_intercept + regression.log_coeff * piece_log)
-                .exp2()
-                .min(regression.min);
-            debug_assert!(latency_s.is_finite() && latency_s > 0.0);
-            //println!("{:?} N{: >2} S{: >2} data: {: >4}mb {:.4}ms", c.ctype, c.n_gpus, c.stride, c.piece_bytes / (1<<20), latency_s * 1e3);
-            total_latency_us += (1e6 * latency_s) as u64;
-        }
-        total_latency_us
-    }
-
     fn n_tiers(&self) -> u32 {
         self.n_tiers
+    }
+
+    fn measure_one(&self, c: &Collective) -> u64 {
+        let key = RegressionKey {
+            ctype: c.ctype,
+            stride: c.stride,
+            n_gpus: c.n_gpus,
+        };
+        let regression = self.regressions.get(&key);
+        if regression.is_none() {
+            println!("No regression for {:?}", key);
+            return 0;
+        }
+        let regression = regression.unwrap();
+        let piece_log = (c.piece_bytes as f64).log2();
+        let latency_s = (regression.log_intercept + regression.log_coeff * piece_log)
+            .exp2()
+            .min(regression.min);
+        (1e6 * latency_s) as u64
     }
 }

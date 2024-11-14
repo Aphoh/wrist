@@ -1,39 +1,46 @@
 use crate::{
     network::Network,
-    ops::{scan::ForwardStackModel, MLP},
+    ops::{scan::ForwardBackwardStackModel, MLP},
     sharding::{SeqModelSpec, ShardStrategy, ShardingType},
     solver::Solveable,
+    tracing::Traceable,
 };
 
-pub struct NaiveMLPForward {
+pub struct NaiveMLP {
     axes: SeqModelSpec,
     leaf_memory: u64,
-    model: ForwardStackModel<MLP>,
+    model: ForwardBackwardStackModel<MLP>,
 }
 
-impl NaiveMLPForward {
-    pub fn new(batch: u64, sequence: u64, feature: u64, layers: u64, leaf_memory: u64) -> Self {
-        let axes = SeqModelSpec {
-            batch,
-            sequence,
-            feature,
-            layers,
-        };
-        NaiveMLPForward {
-            axes,
-            model: ForwardStackModel::new(MLP {
-                input_size: feature,
-                intermediate_size: 4 * feature,
-                output_size: feature,
+impl NaiveMLP {
+    pub fn new(axes: &SeqModelSpec, leaf_memory: u64) -> Self {
+        NaiveMLP {
+            axes: axes.clone(),
+            model: ForwardBackwardStackModel::new(MLP {
+                input_size: axes.feature,
+                intermediate_size: 4 * axes.feature,
+                output_size: axes.feature,
             }),
             leaf_memory,
         }
     }
 }
 
-impl Solveable for NaiveMLPForward {
+impl Traceable for NaiveMLP {
+    fn trace(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+    ) -> crate::tracing::Trace {
+        return self.model.trace(axes, strategy, network);
+    }
+}
+
+impl Solveable for NaiveMLP {
     fn objective<M: Network>(&self, strategy: &ShardStrategy, network: &M) -> u64 {
-        self.model.forward_us(&self.axes, strategy, network)
+        self.model
+            .forward_backward_us(&self.axes, strategy, network)
     }
 
     fn validate(&self, strategy: &ShardStrategy) -> Option<u64> {
@@ -41,10 +48,6 @@ impl Solveable for NaiveMLPForward {
     }
 
     fn supported_shardings(&self) -> Vec<ShardingType> {
-        vec![
-            ShardingType::Data,
-            ShardingType::Tensor,
-            ShardingType::Pipeline,
-        ]
+        vec![ShardingType::Data, ShardingType::Tensor]
     }
 }

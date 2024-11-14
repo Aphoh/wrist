@@ -101,7 +101,7 @@ def main():
     # List of data sizes in MB
     data_sizes_mb = [2 * (2**i) for i in range(11)]  # 2MB to 2048MB
 
-    operations = ["all_reduce", "ring", "reduce", "all_gather", "gather"]
+    operations = ["reduce_scatter", "all_reduce", "ring", "all_gather"]
 
     # Open CSV file per rank
     if rank == 0:
@@ -126,7 +126,7 @@ def main():
             for num_gpus, stride, group_ranks, group in groups:
                 group_size = len(group_ranks)
                 # Estimate memory required per process
-                if op in ["all_reduce", "reduce"]:
+                if op in ["all_reduce", "reduce_scatter"]:
                     memory_per_process = data_size
                 elif op == "all_gather" or op == "gather":
                     memory_per_process = data_size * group_size
@@ -155,8 +155,9 @@ def main():
                     start_time = time.time()
                     if op == "all_reduce":
                         dist.all_reduce(tensor, group=group)
-                    elif op == "reduce":
-                        dist.reduce(tensor, dst=group_ranks[0], group=group)
+                    elif op == "reduce_scatter":
+                        output = torch.zeros(num_elements // group_size, device="cuda", dtype=torch.float16)
+                        dist.reduce_scatter_tensor(output, tensor, group=group)
                     elif op == "all_gather":
                         tensors = [torch.zeros_like(tensor) for _ in group_ranks]
                         dist.all_gather(tensors, tensor, group=group)

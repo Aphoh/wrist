@@ -1,4 +1,4 @@
-use crate::network::{Collective, CollectiveType};
+use crate::network::{Collective, CollectiveType, NamedCollective};
 
 #[derive(Clone)]
 pub struct SeqModelSpec {
@@ -117,6 +117,26 @@ impl ShardStrategy {
             }
         }
         stride
+    }
+
+    pub fn named_collective(
+        &self,
+        name: impl ToString,
+        stype: ShardingType,
+        ctype: CollectiveType,
+        piece_bytes: u64,
+    ) -> Option<NamedCollective> {
+        let n_gpus = self.num_gpus_in_sharding_groups(stype)?;
+        let stride = self.stride_of_sharding_groups(stype);
+        Some(NamedCollective {
+            name: name.to_string(),
+            collective: Collective {
+                ctype,
+                stride,
+                piece_bytes,
+                n_gpus,
+            },
+        })
     }
 
     pub fn collective(

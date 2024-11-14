@@ -2,8 +2,8 @@ pub mod double_linear;
 pub mod scan;
 pub use double_linear::MLP;
 
-use crate::kernels::Kernel;
-use crate::network::Collective;
+use crate::kernels::NamedKernel;
+use crate::network::NamedCollective;
 use crate::sharding::{SeqModelSpec, ShardStrategy};
 
 #[derive(Default)]
@@ -30,21 +30,35 @@ impl MemoryProfile {
 
 #[derive(Default)]
 pub struct ComputeUnit {
-    pub kernels: Vec<Kernel>,
-    pub collective: Option<Collective>,
+    pub kernels: Vec<NamedKernel>,
+    pub collective: Option<NamedCollective>,
 }
 
 impl ComputeUnit {
-    pub fn new(kernels: Vec<Kernel>, collective: Option<Collective>) -> Self {
+    pub fn new(kernels: Vec<NamedKernel>, collective: Option<NamedCollective>) -> Self {
         ComputeUnit {
             kernels,
             collective,
         }
     }
 
-    pub fn new_mergeable(kernels: Vec<Kernel>, collective: Option<Collective>) -> Self {
+    pub fn single(kernel: NamedKernel, collective: Option<NamedCollective>) -> Self {
         ComputeUnit {
-            kernels,
+            kernels: vec![kernel],
+            collective: collective,
+        }
+    }
+
+    pub fn konly(kernel: NamedKernel) -> Self {
+        ComputeUnit {
+            kernels: vec![kernel],
+            collective: None,
+        }
+    }
+
+    pub fn conly(collective: Option<NamedCollective>) -> Self {
+        ComputeUnit {
+            kernels: vec![],
             collective,
         }
     }
@@ -55,15 +69,15 @@ pub trait Operation {
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        downstream_collective: Option<Collective>,
-    ) -> (Vec<ComputeUnit>, Option<Collective>);
+        downstream_collective: Option<NamedCollective>,
+    ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
 
     fn backward(
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        upstream_collective: Option<Collective>,
-    ) -> (Vec<ComputeUnit>, Option<Collective>);
+        upstream_collective: Option<NamedCollective>,
+    ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile;
 
     fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool;

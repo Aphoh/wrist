@@ -10,9 +10,9 @@ pub fn compute_us(
         let kernel_time: u64 = unit
             .kernels
             .iter()
-            .map(|k| kernel_profiler.compute_ns(k))
+            .map(|k| kernel_profiler.compute_us(k.kernel))
             .sum();
-        let network_time = network.measure(unit.collective.map(|c| vec![c]).unwrap_or_default());
+        let network_time = network.measure_maybe(&unit.collective);
         total += kernel_time.max(network_time);
     }
     total

@@ -1,7 +1,8 @@
 use crate::{
     kernels::KernelProfile,
-    network::{CollectiveType, Network},
-    sharding::{SeqModelSpec, ShardStrategy, ShardingType},
+    network::Network,
+    sharding::{SeqModelSpec, ShardStrategy},
+    tracing::{Trace, Traceable},
     utils,
 };
 
@@ -9,6 +10,45 @@ use super::Operation;
 
 pub struct ForwardBackwardStackModel<Op> {
     op: Op,
+}
+
+impl<Op: Operation> Traceable for ForwardBackwardStackModel<Op> {
+    fn trace(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+    ) -> crate::tracing::Trace {
+        let prof = KernelProfile();
+        // Forward Trace
+        let mut trace = Trace::new();
+        let (tail_units, tail_collective) = self.op.forward(axes, strategy, None);
+        if let Some(collective) = &tail_collective {
+            trace.measure_and_add_collective(collective.clone(), network);
+        }
+        trace.measure_and_add(tail_units, &prof, network);
+
+        let (body_units, _) = self.op.forward(axes, strategy, tail_collective);
+
+        if axes.layers > 1 {
+            trace.measure_and_add_scan(axes.layers - 1, body_units, &prof, network);
+        }
+
+        //Backward Trace
+        let (tail_units, tail_collective) = self.op.backward(axes, strategy, None);
+        let (body_units, body_collective) = self.op.backward(axes, strategy, tail_collective);
+        trace.measure_and_add(tail_units, &prof, network);
+
+        if axes.layers > 1 {
+            trace.measure_and_add_scan(axes.layers - 1, body_units, &prof, network);
+        }
+
+        if let Some(collective) = &body_collective {
+            trace.measure_and_add_collective(collective.clone(), network);
+        }
+
+        trace
+    }
 }
 
 impl<Op: Operation> ForwardBackwardStackModel<Op> {
@@ -53,11 +93,35 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
 
         // Forward pass
         let (tail_compute, downstream) = self.op.forward(axes, strategy, None);
-        let tail_time = utils::compute_us(tail_compute, network, &KernelProfile());
+        let tail_body_time = utils::compute_us(tail_compute, network, &KernelProfile());
 
+        let tail_collective_time = network.measure_maybe(&downstream);
+        let tail_time = tail_body_time + tail_collective_time;
         if n_layers > 1 {
             let (body_compute, _) = self.op.forward(axes, strategy, downstream);
-            let body_time = utils::compute_us(body_compute, network, &KernelProfile())
+            let body_time = utils::compute_us(body_compute, network, &KernelProfile());
+            tail_time + (n_layers - 1) * body_time
+        } else {
+            tail_time
+        }
+    }
+
+    pub fn backward_us(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+    ) -> u64 {
+        let n_layers = axes.layers;
+
+        // Backward pass
+        let (tail_compute, downstream) = self.op.backward(axes, strategy, None);
+        let tail_body_time = utils::compute_us(tail_compute, network, &KernelProfile());
+        let tail_collective_time = network.measure_maybe(&downstream);
+        let tail_time = tail_body_time + tail_collective_time;
+        if n_layers > 1 {
+            let (body_compute, _) = self.op.backward(axes, strategy, downstream);
+            let body_time = utils::compute_us(body_compute, network, &KernelProfile());
             tail_time + (n_layers - 1) * body_time
         } else {
             tail_time
@@ -70,113 +134,6 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         strategy: &ShardStrategy,
         network: &impl Network,
     ) -> u64 {
-        let SeqModelSpec {
-            batch,
-            sequence,
-            feature,
-            layers,
-        } = strategy.axis_splits();
-        let n_layers = axes.layers;
-
-        // Forward pass
-        let (tail_compute, downstream) = self.op.forward(axes, strategy, None);
-
-        let (body_compute, _) = self.op.forward(axes, strategy, downstream);
-
-        let tail_time = utils::compute_us(tail_compute, network, &KernelProfile());
-        let body_time = utils::compute_us(body_compute, network, &KernelProfile());
-
-        // Backward pass
-
-        // Assume we can overlap the head downstream collective with data loading or something
-
-        let op_fwd = self.op.forward_us(axes, strategy);
-        let op_bwd = self.op.backward_us(axes, strategy).unwrap_or(2 * op_fwd);
-        let op_comm = network.measure(self.op.micro_batch_fwd_network_ops(axes, strategy));
-        let op_bwd_comm = network.measure(self.op.micro_batch_bwd_network_ops(axes, strategy));
-
-        let memory_profile = self.op.memory_bytes(axes, strategy);
-
-        // Assume the pipeline bubble is 0, since we're only doing inference
-        let comm = strategy
-            .collective(
-                ShardingType::Pipeline,
-                CollectiveType::Ring,
-                memory_profile.activation_memory,
-            )
-            .map(|c| network.measure(&[c]))
-            .unwrap_or(0);
-
-        return (n_layers * (op_fwd + op_comm + op_bwd + op_bwd_comm)) + comm;
-    }
-}
-
-pub struct ForwardStackModel<Op> {
-    op: Op,
-}
-
-impl<Op> ForwardStackModel<Op>
-where
-    Op: Operation,
-{
-    pub fn new(op: Op) -> Self {
-        Self { op }
-    }
-
-    pub fn validate(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-        leaf_memory: u64,
-    ) -> Option<u64> {
-        let pp_split = strategy.axis_splits().layers;
-        if axes.layers % pp_split != 0 || axes.layers / pp_split == 0 {
-            return None;
-        }
-        let n_layers = axes.layers / pp_split;
-
-        let mut profile = self.op.memory_bytes(axes, strategy);
-        profile.gradient_size *= 0; // No backprop
-        profile.cache_for_backprop *= 0; // No backprop
-        profile.weight_memory *= n_layers;
-        if profile.total() > leaf_memory {
-            return None;
-        }
-        self.op.validate(axes, strategy).then(|| profile.total())
-    }
-
-    pub fn forward_us<M: Network>(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-        network: &M,
-    ) -> u64 {
-        let pp_split = strategy.axis_splits().layers;
-        let n_layers = axes.layers / pp_split;
-        let op_fwd = self.op.forward_us(axes, strategy);
-        let op_comm = network.measure(self.op.micro_batch_fwd_network_ops(axes, strategy));
-
-        let memory_profile = self.op.memory_bytes(axes, strategy);
-
-        // Assume the pipeline bubble is 0, since we're only doing inference
-        let comm = strategy
-            .collective(
-                ShardingType::Pipeline,
-                CollectiveType::Ring,
-                memory_profile.activation_memory,
-            )
-            .map(|c| network.measure(&[c]))
-            .unwrap_or(0);
-
-        return (n_layers * (op_fwd + op_comm)) + comm;
-    }
-
-    pub fn forward_backward_us<M: Network>(
-        &self,
-        axes: &SeqModelSpec,
-        strategy: &ShardStrategy,
-        network: &M,
-    ) {
-        let fwd_ms = self.forward_us(axes, strategy, network);
+        self.forward_us(axes, strategy, network) + self.backward_us(axes, strategy, network)
     }
 }
