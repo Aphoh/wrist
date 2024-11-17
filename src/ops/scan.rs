@@ -1,5 +1,5 @@
 use crate::{
-    kernels::KernelProfile,
+    kernels::{KernelProfile, NaiveKernelProfile},
     network::Network,
     sharding::{SeqModelSpec, ShardStrategy},
     tracing::{Trace, Traceable},
@@ -18,8 +18,8 @@ impl<Op: Operation> Traceable for ForwardBackwardStackModel<Op> {
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
         network: &impl Network,
+        kernel_profile: &impl KernelProfile,
     ) -> crate::tracing::Trace {
-        let prof = KernelProfile();
         // Forward Trace
         let mut trace = Trace::new();
         let (tail_units, tail_collective) = self.op.forward(axes, strategy, None);
@@ -29,17 +29,17 @@ impl<Op: Operation> Traceable for ForwardBackwardStackModel<Op> {
         let (body_units, _) = self.op.forward(axes, strategy, tail_collective);
 
         if axes.layers > 1 {
-            trace.measure_and_add_scan("fwd main", axes.layers - 1, body_units, &prof, network);
+            trace.measure_and_add_scan("fwd main", axes.layers - 1, body_units, kernel_profile, network);
         }
 
-        trace.measure_and_add("fwd tail", tail_units, &prof, network);
+        trace.measure_and_add("fwd tail", tail_units, kernel_profile, network);
         //Backward Trace
         let (tail_units, tail_collective) = self.op.backward(axes, strategy, None);
         let (body_units, body_collective) = self.op.backward(axes, strategy, tail_collective);
-        trace.measure_and_add("bwd tail", tail_units, &prof, network);
+        trace.measure_and_add("bwd tail", tail_units, kernel_profile, network);
 
         if axes.layers > 1 {
-            trace.measure_and_add_scan("bwd main", axes.layers - 1, body_units, &prof, network);
+            trace.measure_and_add_scan("bwd main", axes.layers - 1, body_units, kernel_profile, network);
         }
 
         if let Some(collective) = &body_collective {
@@ -87,7 +87,8 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
         network: &impl Network,
+        kernel_profile: &impl KernelProfile,
     ) -> u64 {
-        self.trace(axes, strategy, network).time_us
+        self.trace(axes, strategy, network, kernel_profile).time_us
     }
 }

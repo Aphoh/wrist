@@ -3,7 +3,7 @@ use crate::{kernels::KernelProfile, network::Network, ops::ComputeUnit};
 pub fn compute_us(
     compute_units: Vec<ComputeUnit>,
     network: &impl Network,
-    kernel_profiler: &KernelProfile,
+    kernel_profiler: &impl KernelProfile,
 ) -> u64 {
     let mut total = 0;
     for unit in compute_units {

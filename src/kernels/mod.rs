@@ -1,18 +1,26 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, path::Path};
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Kernel {
     MatMul {
         m: u64,
         k: u64,
         n: u64,
     },
-    FlashAttention {
+    FlashAttentionFwd {
         b: u64,
-        h: u64,
-        q: u64,
         s: u64,
-        d: u64,
+        kv_heads: u64,
+        query_heads: u64,
+        head_dim: u64,
+    },
+    FlashAttentionBwd {
+        b: u64,
+        s: u64,
+        kv_heads: u64,
+        query_heads: u64,
+        head_dim: u64,
     },
     LayerNorm {
         n: u64,
@@ -38,8 +46,24 @@ impl NamedKernel {
         NamedKernel::new(name, Kernel::MatMul { m, n, k })
     }
 
-    pub fn flash_attention(name: impl ToString, b: u64, h: u64, q: u64, s: u64, d: u64) -> Self {
-        NamedKernel::new(name, Kernel::FlashAttention { b, h, q, s, d })
+    pub fn flash_attention(
+        name: impl ToString,
+        b: u64,
+        s: u64,
+        kv_heads: u64,
+        query_heads: u64,
+        head_dim: u64,
+    ) -> Self {
+        NamedKernel::new(
+            name,
+            Kernel::FlashAttentionFwd {
+                b,
+                s,
+                kv_heads,
+                query_heads,
+                head_dim,
+            },
+        )
     }
 }
 
@@ -49,18 +73,63 @@ impl From<NamedKernel> for Kernel {
     }
 }
 
-pub struct KernelProfile();
+pub trait KernelProfile {
+    fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64;
+}
 
+pub struct NaiveKernelProfile();
 pub const FLOPS_PER_US: f64 = 0.5 * 312e6;
-
 // TODO: actually use data
-impl KernelProfile {
-    pub fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64 {
+impl KernelProfile for NaiveKernelProfile {
+    fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64 {
         let flops = match kernel.into() {
             Kernel::MatMul { m, n, k } => 2 * m * n * k,
-            Kernel::FlashAttention { b, h, q, s, d } => 2 * b * h * q * s * d,
+            Kernel::FlashAttentionFwd { b, s, kv_heads, query_heads, head_dim } => 2 * b * s * kv_heads * query_heads * head_dim,
             Kernel::LayerNorm { n, hidden } => 2 * n * hidden,
+            Kernel::FlashAttentionBwd { b, s, kv_heads, query_heads, head_dim } => todo!(),
         };
         return (flops as f64 / FLOPS_PER_US) as u64;
+    }
+}
+
+#[derive(Deserialize, Debug)]
+
+struct ProfileRow {
+    m: u64,
+    n: u64,
+    k: u64,
+    time_ms: f64,
+    #[serde(rename = "type")]
+    ty: String,
+}
+
+pub struct DenseLookupKernelProfile {
+    pub records: HashMap<Kernel, u64>,
+}
+
+impl DenseLookupKernelProfile {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Self {
+        let mut reader = csv::Reader::from_path(path).expect("Failed to read kernel profile file");
+        let mut records = HashMap::new();
+        for row in reader.deserialize() {
+            let row: ProfileRow = row.expect("Failed to parse row");
+            let kernel = match row.ty.as_str() {
+                "matmul" => Kernel::MatMul {
+                    m: row.m,
+                    n: row.n,
+                    k: row.k,
+                },
+                _ => panic!("Unknown kernel type"),
+            };
+            records.insert(kernel, (row.time_ms * 1e3) as u64);
+        }
+
+        Self { records }
+    }
+}
+
+impl KernelProfile for DenseLookupKernelProfile {
+    fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64 {
+        *self.records.get(&kernel.into()).unwrap()
     }
 }

@@ -1,6 +1,9 @@
 pub mod double_linear;
 pub mod scan;
+pub mod attention;
+pub use attention::*;
 pub use double_linear::MLP;
+
 
 use crate::kernels::NamedKernel;
 use crate::network::NamedCollective;

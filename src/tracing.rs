@@ -14,7 +14,7 @@ pub struct MeasuredKernel {
 }
 
 impl MeasuredKernel {
-    pub fn measure(kernel: NamedKernel, prof: &KernelProfile) -> Self {
+    pub fn measure(kernel: NamedKernel, prof: &impl KernelProfile) -> Self {
         let time_us = prof.compute_us(kernel.kernel);
         Self { kernel, time_us }
     }
@@ -57,7 +57,7 @@ impl MeasuredComputeUnit {
         }
     }
 
-    pub fn measure(cu: ComputeUnit, prof: &KernelProfile, network: &impl Network) -> Self {
+    pub fn measure(cu: ComputeUnit, prof: &impl KernelProfile, network: &impl Network) -> Self {
         let kernels: Vec<_> = cu
             .kernels
             .into_iter()
@@ -108,7 +108,7 @@ impl Trace {
         &mut self,
         name: impl ToString,
         cu: Vec<ComputeUnit>,
-        prof: &KernelProfile,
+        prof: &impl KernelProfile,
         network: &impl Network,
     ) {
         let cus: Vec<_> = cu
@@ -127,7 +127,7 @@ impl Trace {
         name: impl ToString,
         n: u64,
         cus: Vec<ComputeUnit>,
-        prof: &KernelProfile,
+        prof: &impl KernelProfile,
         network: &impl Network,
     ) {
         let cus: Vec<_> = cus
@@ -228,6 +228,6 @@ impl Trace {
 }
 
 pub trait Traceable {
-    fn trace(&self, axes: &SeqModelSpec, strategy: &ShardStrategy, network: &impl Network)
+    fn trace(&self, axes: &SeqModelSpec, strategy: &ShardStrategy, network: &impl Network, kernel_profile: &impl KernelProfile)
         -> Trace;
 }

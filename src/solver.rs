@@ -1,12 +1,10 @@
 use crate::{
-    combinations::{self, permuted_combinations_with_replacement},
-    network::Network,
-    sharding::{ShardStrategy, ShardingType},
+    combinations::{self, permuted_combinations_with_replacement}, kernels::KernelProfile, network::Network, sharding::{ShardStrategy, ShardingType}
 };
 //use rayon::prelude::*;
 
 pub trait Solveable {
-    fn objective<M: Network>(&self, strategy: &ShardStrategy, network: &M) -> u64;
+    fn objective(&self, strategy: &ShardStrategy, network: &impl Network, prof: &impl KernelProfile) -> u64;
     fn validate(&self, strategy: &ShardStrategy) -> Option<u64>;
     fn supported_shardings(&self) -> Vec<ShardingType>;
 }
@@ -16,6 +14,7 @@ impl DenseSolver {
     pub fn solve<M: Network + Send + Sync, T: Solveable + Send + Sync>(
         model: &T,
         network: &M,
+        kernel_profiler: &impl KernelProfile,
     ) -> Option<ShardStrategy> {
         let n_tiers = network.n_tiers();
 
@@ -30,7 +29,7 @@ impl DenseSolver {
                 .filter_map(|strategy| {
                     let strategy = ShardStrategy::new(strategy).expect("Invalid strategy");
                     model.validate(&strategy).map(|max_mem| {
-                        let obj = model.objective(&strategy, network);
+                        let obj = model.objective(&strategy, network, kernel_profiler);
                         println!("Strategy: {}, objective: {}", strategy, obj as f32 / 1e3);
                         (strategy, max_mem, obj)
                     })
