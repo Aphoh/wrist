@@ -4,6 +4,7 @@ use crate::ops::{MemoryProfile, Operation};
 use crate::sharding::SeqModelSpec;
 use crate::sharding::ShardStrategy;
 use crate::sharding::ShardingType;
+use crate::utils::ValidationError;
 
 use super::ComputeUnit;
 
@@ -185,7 +186,7 @@ impl Operation for MLP {
         }
     }
 
-    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool {
+    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> Result<(), ValidationError> {
         let SeqModelSpec {
             batch,
             sequence,
@@ -195,6 +196,16 @@ impl Operation for MLP {
         let batch_per_leaf = axes.batch / batch;
         let sequence_per_leaf = axes.sequence / sequence;
         let output_per_leaf = self.output_size / feature;
-        batch_per_leaf != 0 && sequence_per_leaf != 0 && output_per_leaf != 0
+
+        if batch_per_leaf == 0 {
+            return Err(ValidationError::InvalidBatchSplit(axes.batch, batch));
+        } else if sequence_per_leaf == 0 {
+            return Err(ValidationError::InvalidSequenceSplit(axes.sequence, sequence));
+        } else if output_per_leaf == 0 {
+            return Err(ValidationError::InvalidFeatureSplit(self.output_size, feature));
+        } else if self.intermediate_size % feature != 0 {
+            return Err(ValidationError::InvalidMLPSplit(self.intermediate_size, feature));
+        }
+        Ok(())
     }
 }

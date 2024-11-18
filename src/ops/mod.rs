@@ -1,13 +1,17 @@
 pub mod double_linear;
+pub use double_linear::MLP;
+
 pub mod scan;
+pub mod composite;
+
 pub mod attention;
 pub use attention::*;
-pub use double_linear::MLP;
 
 
 use crate::kernels::NamedKernel;
 use crate::network::NamedCollective;
 use crate::sharding::{SeqModelSpec, ShardStrategy};
+use crate::utils::ValidationError;
 
 #[derive(Default)]
 pub struct MemoryProfile {
@@ -83,7 +87,7 @@ pub trait Operation {
     ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile;
 
-    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> bool;
+    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> Result<(), ValidationError>;
     // TODO: deal with batch network ops
     //fn batch_network_ops(&self, axes: SeqModelSpec, strategy: &ShardStrategy<M>) -> Vec<Collective>;
 }

@@ -1,3 +1,5 @@
+use kernels::NaiveKernelProfile;
+use models::transformer::DecoderTransformer;
 use network::RegressionNetwork;
 use sharding::SeqModelSpec;
 use tracing::Traceable;
@@ -18,24 +20,21 @@ use serde_json;
 fn main() {
     let axes = SeqModelSpec {
         batch: 16,
-        sequence: 2048,
-        feature: 8192,
-        layers: 40,
+        sequence: 8192,
+        feature: 4096,
+        layers: 32,
     };
     let leaf_memory = 80e9 as u64; // 80 GB
-    let n_tiers = 2;
+    let n_tiers = 4;
 
-    let model_size = 2 * (axes.feature as u64) * (axes.feature as u64) * (axes.layers as u64);
-    println!("Model size: {:.2}GB", (model_size as f64) / 1e9);
-    println!("Leaf memory: {:.2}GB", (leaf_memory as f64) / 1e9);
-
-    let naive_mlp = models::naive_mlp::NaiveMLP::new(&axes, leaf_memory);
-    let kernel_profile = kernels::DenseLookupKernelProfile::from_file("kernel_profile.csv");
-    let net = RegressionNetwork::from_file(n_tiers, "regression_4gpus.csv");
-    let strategy = solver::DenseSolver::solve(&naive_mlp, &net, &kernel_profile);
+    let tformer = DecoderTransformer::new(axes.clone(), 32, 8, leaf_memory);
+    //let kernel_profile = kernels::DenseLookupKernelProfile::from_file("kernel_profile.csv");
+    let kernel_profile = NaiveKernelProfile();
+    let net = RegressionNetwork::from_file(n_tiers, "regression_strided_3.csv");
+    let strategy = solver::DenseSolver::solve(&tformer, &net, &kernel_profile);
     if let Some(s) = strategy {
         println!("Strategy: {}", s);
-        let trace = naive_mlp.trace(&axes, &s, &net, &kernel_profile);
+        let trace = tformer.trace(&axes, &s, &net, &kernel_profile);
         let json_result = trace.to_json().unwrap();
         std::fs::write("trace.json", json_result).expect("Unable to write file");
     } else {

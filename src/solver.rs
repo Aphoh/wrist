@@ -1,11 +1,20 @@
 use crate::{
-    combinations::{self, permuted_combinations_with_replacement}, kernels::KernelProfile, network::Network, sharding::{ShardStrategy, ShardingType}
+    combinations::{self, permuted_combinations_with_replacement},
+    kernels::KernelProfile,
+    network::Network,
+    sharding::{ShardStrategy, ShardingType},
+    utils::ValidationError,
 };
 //use rayon::prelude::*;
 
 pub trait Solveable {
-    fn objective(&self, strategy: &ShardStrategy, network: &impl Network, prof: &impl KernelProfile) -> u64;
-    fn validate(&self, strategy: &ShardStrategy) -> Option<u64>;
+    fn objective(
+        &self,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+        prof: &impl KernelProfile,
+    ) -> u64;
+    fn validate(&self, strategy: &ShardStrategy) -> Result<u64, ValidationError>;
     fn supported_shardings(&self) -> Vec<ShardingType>;
 }
 
@@ -28,11 +37,18 @@ impl DenseSolver {
             permuted_combinations_with_replacement(&supported_shardings, n_tiers as usize)
                 .filter_map(|strategy| {
                     let strategy = ShardStrategy::new(strategy).expect("Invalid strategy");
-                    model.validate(&strategy).map(|max_mem| {
-                        let obj = model.objective(&strategy, network, kernel_profiler);
-                        println!("Strategy: {}, objective: {}", strategy, obj as f32 / 1e3);
-                        (strategy, max_mem, obj)
-                    })
+                    model
+                        .validate(&strategy)
+                        .map(|max_mem| {
+                            let obj = model.objective(&strategy, network, kernel_profiler);
+                            println!("Strategy: {}, objective: {}", strategy, obj as f32 / 1e3);
+                            (strategy, max_mem, obj)
+                        })
+                        .map_err(|e| {
+                            println!("Invalid strategy: {}", e);
+                            e
+                        })
+                        .ok()
                 })
                 .min_by(|a, b| a.2.cmp(&b.2))
         {

@@ -1,5 +1,5 @@
 use crate::{
-    kernels::KernelProfile, network::Network, ops::{scan::ForwardBackwardStackModel, MLP}, sharding::{SeqModelSpec, ShardStrategy, ShardingType}, solver::Solveable, tracing::Traceable
+    kernels::KernelProfile, network::Network, ops::{scan::ForwardBackwardStackModel, MLP}, sharding::{SeqModelSpec, ShardStrategy, ShardingType}, solver::Solveable, tracing::Traceable, utils::ValidationError
 };
 
 pub struct NaiveMLP {
@@ -40,7 +40,7 @@ impl Solveable for NaiveMLP {
             .forward_backward_us(&self.axes, strategy, network, prof)
     }
 
-    fn validate(&self, strategy: &ShardStrategy) -> Option<u64> {
+    fn validate(&self, strategy: &ShardStrategy) -> Result<u64, ValidationError> {
         self.model.validate(&self.axes, strategy, self.leaf_memory)
     }
 

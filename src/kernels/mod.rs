@@ -84,9 +84,21 @@ impl KernelProfile for NaiveKernelProfile {
     fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64 {
         let flops = match kernel.into() {
             Kernel::MatMul { m, n, k } => 2 * m * n * k,
-            Kernel::FlashAttentionFwd { b, s, kv_heads, query_heads, head_dim } => 2 * b * s * kv_heads * query_heads * head_dim,
+            Kernel::FlashAttentionFwd {
+                b,
+                s,
+                query_heads,
+                head_dim,
+                ..
+            } => flash_attention_forward_flops(b, s, query_heads, head_dim),
             Kernel::LayerNorm { n, hidden } => 2 * n * hidden,
-            Kernel::FlashAttentionBwd { b, s, kv_heads, query_heads, head_dim } => todo!(),
+            Kernel::FlashAttentionBwd {
+                b,
+                s,
+                query_heads,
+                head_dim,
+                ..
+            } => 2 * flash_attention_forward_flops(b, s, query_heads, head_dim),
         };
         return (flops as f64 / FLOPS_PER_US) as u64;
     }
@@ -130,6 +142,22 @@ impl DenseLookupKernelProfile {
 
 impl KernelProfile for DenseLookupKernelProfile {
     fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64 {
-        *self.records.get(&kernel.into()).unwrap()
+        *self.records.get(&kernel.into()).expect("Kernel not found")
     }
+}
+
+fn flash_attention_forward_flops(
+    batch_size: u64,
+    sequence_length: u64,
+    query_heads: u64,
+    head_dim: u64,
+) -> u64 {
+    // Compute total FLOPs for forward pass
+    let total_flops_qk =
+        2 * batch_size * query_heads * sequence_length * sequence_length * head_dim;
+
+    let total_flops_av =
+        2 * batch_size * query_heads * sequence_length * sequence_length * head_dim;
+
+    return total_flops_qk + total_flops_av;
 }

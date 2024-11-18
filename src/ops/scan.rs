@@ -3,7 +3,7 @@ use crate::{
     network::Network,
     sharding::{SeqModelSpec, ShardStrategy},
     tracing::{Trace, Traceable},
-    utils,
+    utils::{self, ValidationError},
 };
 
 use super::Operation;
@@ -60,14 +60,14 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
         leaf_memory: u64,
-    ) -> Option<u64> {
+    ) -> Result<u64, ValidationError> {
         let SeqModelSpec {
             layers: pp_split,
             batch: dp_split,
             ..
         } = strategy.axis_splits();
         if axes.layers % pp_split != 0 || axes.layers / pp_split == 0 {
-            return None;
+            return Err(ValidationError::InvalidLayerSplit(axes.layers, pp_split));
         }
         let n_layers = axes.layers / pp_split;
 
@@ -76,10 +76,11 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         profile.cache_for_backprop *= n_layers;
         profile.weight_memory *= n_layers;
         let optimizer_size = 4 * profile.weight_memory / dp_split; // Zero-2 sharding
-        if profile.total() + optimizer_size > leaf_memory {
-            return None;
+        let total = profile.total() + optimizer_size;
+        if total > leaf_memory {
+            return Err(ValidationError::InsufficientMemory(leaf_memory, total));
         }
-        self.op.validate(axes, strategy).then(|| profile.total())
+        self.op.validate(axes, strategy).map(|_| total)
     }
 
     pub fn forward_backward_us(
