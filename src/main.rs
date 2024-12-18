@@ -15,7 +15,6 @@ pub mod solver;
 mod tests;
 pub mod tracing;
 pub mod utils;
-use serde_json;
 
 fn main() {
     let axes = SeqModelSpec {
@@ -28,8 +27,8 @@ fn main() {
     let n_tiers = 4;
 
     let tformer = DecoderTransformer::new(axes.clone(), 32, 8, leaf_memory);
-    //let kernel_profile = kernels::DenseLookupKernelProfile::from_file("kernel_profile.csv");
-    let kernel_profile = NaiveKernelProfile();
+    let kernel_profile = kernels::DenseLookupKernelProfile::from_file("kernel_profile.csv");
+    //let kernel_profile = NaiveKernelProfile();
     let net = RegressionNetwork::from_file(n_tiers, "regression_strided_3.csv");
     let strategy = solver::DenseSolver::solve(&tformer, &net, &kernel_profile);
     if let Some(s) = strategy {

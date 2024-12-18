@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, ops::Deref, path::Path};
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Kernel {
@@ -142,7 +142,11 @@ impl DenseLookupKernelProfile {
 
 impl KernelProfile for DenseLookupKernelProfile {
     fn compute_us<I: Into<Kernel>>(&self, kernel: I) -> u64 {
-        *self.records.get(&kernel.into()).expect("Kernel not found")
+        let k = kernel.into();
+        self.records
+            .get(&k)
+            .map(|c| *c)
+            .unwrap_or_else(|| NaiveKernelProfile().compute_us(k))
     }
 }
 

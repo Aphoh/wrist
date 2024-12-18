@@ -228,6 +228,11 @@ impl Trace {
 }
 
 pub trait Traceable {
-    fn trace(&self, axes: &SeqModelSpec, strategy: &ShardStrategy, network: &impl Network, kernel_profile: &impl KernelProfile)
-        -> Trace;
+    fn trace(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+        network: &impl Network,
+        kernel_profile: &impl KernelProfile,
+    ) -> Trace;
 }

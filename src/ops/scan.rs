@@ -29,7 +29,13 @@ impl<Op: Operation> Traceable for ForwardBackwardStackModel<Op> {
         let (body_units, _) = self.op.forward(axes, strategy, tail_collective);
 
         if axes.layers > 1 {
-            trace.measure_and_add_scan("fwd main", axes.layers - 1, body_units, kernel_profile, network);
+            trace.measure_and_add_scan(
+                "fwd main",
+                axes.layers - 1,
+                body_units,
+                kernel_profile,
+                network,
+            );
         }
 
         trace.measure_and_add("fwd tail", tail_units, kernel_profile, network);
@@ -39,7 +45,13 @@ impl<Op: Operation> Traceable for ForwardBackwardStackModel<Op> {
         trace.measure_and_add("bwd tail", tail_units, kernel_profile, network);
 
         if axes.layers > 1 {
-            trace.measure_and_add_scan("bwd main", axes.layers - 1, body_units, kernel_profile, network);
+            trace.measure_and_add_scan(
+                "bwd main",
+                axes.layers - 1,
+                body_units,
+                kernel_profile,
+                network,
+            );
         }
 
         if let Some(collective) = &body_collective {
@@ -72,11 +84,9 @@ impl<Op: Operation> ForwardBackwardStackModel<Op> {
         let n_layers = axes.layers / pp_split;
 
         let mut profile = self.op.memory_bytes(axes, strategy);
-        profile.gradient_size *= n_layers;
         profile.cache_for_backprop *= n_layers;
-        profile.weight_memory *= n_layers;
-        let optimizer_size = 4 * profile.weight_memory / dp_split; // Zero-2 sharding
-        let total = profile.total() + optimizer_size;
+        profile.weight_size *= n_layers;
+        let total = profile.total_mem_usage(dp_split);
         if total > leaf_memory {
             return Err(ValidationError::InsufficientMemory(leaf_memory, total));
         }

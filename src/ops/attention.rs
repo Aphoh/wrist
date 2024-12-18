@@ -2,7 +2,8 @@ use crate::{
     kernels::{Kernel, NamedKernel},
     network::{CollectiveType, NamedCollective},
     ops::ComputeUnit,
-    sharding::{SeqModelSpec, ShardStrategy, ShardingType}, utils::ValidationError,
+    sharding::{SeqModelSpec, ShardStrategy, ShardingType},
+    utils::ValidationError,
 };
 
 use super::Operation;
@@ -192,27 +193,32 @@ impl Operation for AttentionOp {
         let qkv_out_size = (query_heads + 2 * kv_heads) * head_dim;
         let attn_out_size = query_heads * head_dim;
         let input_act_size = batch_size * sequence_length * axes.feature;
-        let attn_out_act_size = batch_size * sequence_length * attn_out_size;
-        println!("feature: {}, input_act_size: {}, attn_out_size: {}", feature, input_act_size, attn_out_act_size);
+        let output_act_size = batch_size * sequence_length * axes.feature;
+        //println!("feature: {}, input_act_size: {}, attn_out_size: {}", feature, input_act_size, attn_out_act_size);
         return super::MemoryProfile {
-            weight_memory: axes.feature * (qkv_out_size + attn_out_size),
-            activation_memory: 0, // TODO
-            cache_for_backprop: input_act_size + attn_out_act_size, // TODO
-            gradient_size: 0, // TODO
+            weight_size: axes.feature * (qkv_out_size + attn_out_size),
+            activation_size: input_act_size.max(qkv_out_size).max(output_act_size),
+            cache_for_backprop: input_act_size + qkv_out_size + output_act_size,
+            input_act_size,
+            output_act_size,
         };
     }
 
-    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> Result<(), ValidationError> {
-        let SeqModelSpec {
-            feature,
-            ..
-        } = strategy.axis_splits();
-        
+    fn validate(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+    ) -> Result<(), ValidationError> {
+        let SeqModelSpec { feature, .. } = strategy.axis_splits();
+
         if self.n_q_heads % feature != 0 {
             return Err(ValidationError::InvalidQHeadSplit(self.n_q_heads, feature));
         }
         if self.n_kv_heads % feature != 0 {
-            return Err(ValidationError::InvalidKVHeadSplit(self.n_kv_heads, feature));
+            return Err(ValidationError::InvalidKVHeadSplit(
+                self.n_kv_heads,
+                feature,
+            ));
         }
         Ok(())
     }

@@ -179,14 +179,19 @@ impl Operation for MLP {
         let activation_memory = 2 * leaf_batch_size * leaf_seq_size * self.output_size;
 
         MemoryProfile {
-            weight_memory,
-            activation_memory,
+            weight_size: weight_memory,
+            activation_size: activation_memory,
             cache_for_backprop: w1_act_memory + w2_act_memory,
-            gradient_size: weight_memory,
+            input_act_size: self.input_size * leaf_batch_size * leaf_seq_size,
+            output_act_size: self.output_size * leaf_batch_size * leaf_seq_size,
         }
     }
 
-    fn validate(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> Result<(), ValidationError> {
+    fn validate(
+        &self,
+        axes: &SeqModelSpec,
+        strategy: &ShardStrategy,
+    ) -> Result<(), ValidationError> {
         let SeqModelSpec {
             batch,
             sequence,
@@ -200,11 +205,20 @@ impl Operation for MLP {
         if batch_per_leaf == 0 {
             return Err(ValidationError::InvalidBatchSplit(axes.batch, batch));
         } else if sequence_per_leaf == 0 {
-            return Err(ValidationError::InvalidSequenceSplit(axes.sequence, sequence));
+            return Err(ValidationError::InvalidSequenceSplit(
+                axes.sequence,
+                sequence,
+            ));
         } else if output_per_leaf == 0 {
-            return Err(ValidationError::InvalidFeatureSplit(self.output_size, feature));
+            return Err(ValidationError::InvalidFeatureSplit(
+                self.output_size,
+                feature,
+            ));
         } else if self.intermediate_size % feature != 0 {
-            return Err(ValidationError::InvalidMLPSplit(self.intermediate_size, feature));
+            return Err(ValidationError::InvalidMLPSplit(
+                self.intermediate_size,
+                feature,
+            ));
         }
         Ok(())
     }

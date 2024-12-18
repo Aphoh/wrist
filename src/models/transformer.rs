@@ -4,7 +4,8 @@ use crate::{
     ops::{composite::DoubleOp, scan::ForwardBackwardStackModel, AttentionOp, MLP},
     sharding::{SeqModelSpec, ShardStrategy},
     solver::Solveable,
-    tracing::{Trace, Traceable}, utils::ValidationError,
+    tracing::{Trace, Traceable},
+    utils::ValidationError,
 };
 
 pub struct DecoderTransformer {
@@ -44,9 +45,7 @@ impl Traceable for DecoderTransformer {
         network: &impl Network,
         kernel_profile: &impl KernelProfile,
     ) -> Trace {
-        return self
-            .body
-            .trace(axes, strategy, network, kernel_profile);
+        return self.body.trace(axes, strategy, network, kernel_profile);
     }
 }
 
