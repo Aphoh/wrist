@@ -1,5 +1,4 @@
 use crate::{kernels::KernelProfile, network::Network, ops::ComputeUnit};
-use serde_json::error;
 use thiserror::Error;
 
 pub fn compute_us(
@@ -12,7 +11,7 @@ pub fn compute_us(
         let kernel_time: u64 = unit
             .kernels
             .iter()
-            .map(|k| kernel_profiler.compute_us(k.kernel))
+            .map(|k| kernel_profiler.compute_us(k.op))
             .sum();
         let network_time = network.measure_maybe(&unit.collective);
         total += kernel_time.max(network_time);

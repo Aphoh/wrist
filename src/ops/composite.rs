@@ -1,5 +1,5 @@
 use crate::{
-    network::NamedCollective,
+    network::Collective,
     sharding::{SeqModelSpec, ShardStrategy},
     utils::ValidationError,
 };
@@ -20,8 +20,8 @@ where
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        downstream_collective: Option<NamedCollective>,
-    ) -> (Vec<super::ComputeUnit>, Option<NamedCollective>) {
+        downstream_collective: Option<Collective>,
+    ) -> (Vec<super::ComputeUnit>, Option<Collective>) {
         // 2nd operation takes the downstream collective
         let (cu2, coll2) = self.op2.forward(axes, strategy, downstream_collective);
         // 1st operation takes the collective from the 2nd operation
@@ -35,10 +35,10 @@ where
         &self,
         axes: &crate::sharding::SeqModelSpec,
         strategy: &crate::sharding::ShardStrategy,
-        upstream_collective: Option<crate::network::NamedCollective>, // This is normally an all-reduce of the previous step's gradients
+        upstream_collective: Option<crate::network::Collective>, // This is normally an all-reduce of the previous step's gradients
     ) -> (
         Vec<super::ComputeUnit>,
-        Option<crate::network::NamedCollective>,
+        Option<crate::network::Collective>,
     ) {
         // cu2 executes first, does the collective from upstream
         let (mut cu2, coll2) = self.op2.backward(axes, strategy, upstream_collective);

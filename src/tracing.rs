@@ -1,34 +1,34 @@
 use serde::Serialize;
 
 use crate::{
-    kernels::{KernelProfile, NamedKernel},
-    network::{NamedCollective, Network},
+    kernels::{KernelProfile, Kernel},
+    network::{Network, Collective},
     ops::ComputeUnit,
     sharding::{SeqModelSpec, ShardStrategy},
 };
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasuredKernel {
-    kernel: NamedKernel,
+    kernel: Kernel,
     time_us: u64,
 }
 
 impl MeasuredKernel {
-    pub fn measure(kernel: NamedKernel, prof: &impl KernelProfile) -> Self {
-        let time_us = prof.compute_us(kernel.kernel);
+    pub fn measure(kernel: Kernel, prof: &impl KernelProfile) -> Self {
+        let time_us = prof.compute_us(kernel.op);
         Self { kernel, time_us }
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MeasuredCollective {
-    collective: NamedCollective,
+    collective: Collective,
     time_us: u64,
 }
 
 impl MeasuredCollective {
-    pub fn measure(collective: NamedCollective, network: &impl Network) -> Self {
-        let time_us = network.measure_one(&collective.collective);
+    pub fn measure(collective: Collective, network: &impl Network) -> Self {
+        let time_us = network.measure_one(&collective);
         Self {
             collective,
             time_us,
@@ -49,7 +49,7 @@ impl MeasuredComputeUnit {
         kernel_time_us.max(collective_time_us)
     }
 
-    pub fn from_collective(c: NamedCollective, network: &impl Network) -> Self {
+    pub fn from_collective(c: Collective, network: &impl Network) -> Self {
         let measured = MeasuredCollective::measure(c, network);
         Self {
             kernels: Default::default(),
@@ -145,7 +145,7 @@ impl Trace {
     pub fn measure_and_add_collective(
         &mut self,
         name: impl ToString,
-        c: NamedCollective,
+        c: Collective,
         network: &impl Network,
     ) {
         let measured = MeasuredComputeUnit::from_collective(c, network);

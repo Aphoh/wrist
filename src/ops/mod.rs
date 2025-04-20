@@ -7,8 +7,8 @@ pub mod scan;
 pub mod attention;
 pub use attention::*;
 
-use crate::kernels::NamedKernel;
-use crate::network::NamedCollective;
+use crate::kernels::Kernel;
+use crate::network::Collective;
 use crate::sharding::{SeqModelSpec, ShardStrategy};
 use crate::utils::ValidationError;
 
@@ -39,8 +39,8 @@ impl MemoryProfile {
 }
 
 pub enum GraphNode {
-    Kernel(NamedKernel),
-    Collective(NamedCollective),
+    Kernel(Kernel),
+    Collective(Collective),
 }
 
 #[derive(Default)]
@@ -55,11 +55,11 @@ impl ComputeGraph {
         Default::default()
     }
 
-    pub fn kernel(&mut self, deps: impl AsRef<[usize]>, kernel: NamedKernel) -> usize {
+    pub fn kernel(&mut self, deps: impl AsRef<[usize]>, kernel: Kernel) -> usize {
         self.add_node(deps, GraphNode::Kernel(kernel))
     }
 
-    pub fn coll(&mut self, deps: impl AsRef<[usize]>, coll: NamedCollective) -> usize {
+    pub fn coll(&mut self, deps: impl AsRef<[usize]>, coll: Collective) -> usize {
         self.add_node(deps, GraphNode::Collective(coll))
     }
 
@@ -79,33 +79,33 @@ impl ComputeGraph {
 
 #[derive(Default)]
 pub struct ComputeUnit {
-    pub kernels: Vec<NamedKernel>,
-    pub collective: Option<NamedCollective>,
+    pub kernels: Vec<Kernel>,
+    pub collective: Option<Collective>,
 }
 
 impl ComputeUnit {
-    pub fn new(kernels: Vec<NamedKernel>, collective: Option<NamedCollective>) -> Self {
+    pub fn new(kernels: Vec<Kernel>, collective: Option<Collective>) -> Self {
         ComputeUnit {
             kernels,
             collective,
         }
     }
 
-    pub fn single(kernel: NamedKernel, collective: Option<NamedCollective>) -> Self {
+    pub fn single(kernel: Kernel, collective: Option<Collective>) -> Self {
         ComputeUnit {
             kernels: vec![kernel],
             collective: collective,
         }
     }
 
-    pub fn konly(kernel: NamedKernel) -> Self {
+    pub fn konly(kernel: Kernel) -> Self {
         ComputeUnit {
             kernels: vec![kernel],
             collective: None,
         }
     }
 
-    pub fn conly(collective: Option<NamedCollective>) -> Self {
+    pub fn conly(collective: Option<Collective>) -> Self {
         ComputeUnit {
             kernels: vec![],
             collective,
@@ -118,15 +118,15 @@ pub trait Operation {
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        downstream_collective: Option<NamedCollective>, // This is normally an all-gather that the next layer needs
-    ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
+        downstream_collective: Option<Collective>, // This is normally an all-gather that the next layer needs
+    ) -> (Vec<ComputeUnit>, Option<Collective>);
 
     fn backward(
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        upstream_collective: Option<NamedCollective>, // This is normally an all-reduce of the previous step's gradients
-    ) -> (Vec<ComputeUnit>, Option<NamedCollective>);
+        upstream_collective: Option<Collective>, // This is normally an all-reduce of the previous step's gradients
+    ) -> (Vec<ComputeUnit>, Option<Collective>);
     fn memory_bytes(&self, axes: &SeqModelSpec, strategy: &ShardStrategy) -> MemoryProfile;
 
     fn validate(

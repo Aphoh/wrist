@@ -13,6 +13,7 @@ const COLLECTIVES: [&'static str; 4] = ["all_gather", "all_reduce", "reduce_scat
 
 #[derive(Eq, PartialEq, Debug, Hash, Clone, PartialOrd, Ord, Serialize)]
 pub struct Collective {
+    pub name: String,
     pub ctype: CollectiveType,
     /// Stride is the spacing between leaves in the tree
     /// so for a 8 node tree, 3 tiers:
@@ -26,21 +27,10 @@ pub struct Collective {
     pub n_gpus: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct NamedCollective {
-    pub name: String,
-    pub collective: Collective,
-}
-
-impl AsRef<Collective> for NamedCollective {
-    fn as_ref(&self) -> &Collective {
-        &self.collective
-    }
-}
-
 impl Collective {
-    pub fn all_gather(piece_bytes: u64, tier: u32, stride: u32) -> Self {
+    pub fn all_gather(name: String, piece_bytes: u64, tier: u32, stride: u32) -> Self {
         Self {
+            name,
             ctype: CollectiveType::AllGather,
             stride,
             piece_bytes,
@@ -48,8 +38,9 @@ impl Collective {
         }
     }
 
-    pub fn all_reduce(piece_bytes: u64, tier: u32, stride: u32) -> Self {
+    pub fn all_reduce(name: String, piece_bytes: u64, tier: u32, stride: u32) -> Self {
         Self {
+            name,
             ctype: CollectiveType::AllReduce,
             stride,
             piece_bytes,
@@ -58,10 +49,10 @@ impl Collective {
     }
 }
 pub trait Network {
-    fn measure_maybe(&self, collective: &Option<impl AsRef<Collective>>) -> u64 {
+    fn measure_maybe(&self, collective: &Option<Collective>) -> u64 {
         collective
             .as_ref()
-            .map(|c| self.measure_one(c.as_ref()))
+            .map(|c| self.measure_one(c))
             .unwrap_or(0)
     }
     fn measure_one(&self, collective: &Collective) -> u64;

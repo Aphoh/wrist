@@ -1,6 +1,6 @@
 use crate::{
-    kernels::{Kernel, NamedKernel},
-    network::{CollectiveType, NamedCollective},
+    kernels::{KernelOp, Kernel},
+    network::{CollectiveType, Collective},
     ops::ComputeUnit,
     sharding::{SeqModelSpec, ShardStrategy, ShardingType},
     utils::ValidationError,
@@ -18,8 +18,8 @@ impl Operation for AttentionOp {
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        downstream_collective: Option<NamedCollective>, // This is normally an all-gather that the next layer needs
-    ) -> (Vec<super::ComputeUnit>, Option<NamedCollective>) {
+        downstream_collective: Option<Collective>, // This is normally an all-gather that the next layer needs
+    ) -> (Vec<super::ComputeUnit>, Option<Collective>) {
         let SeqModelSpec {
             batch,
             sequence,
@@ -39,16 +39,16 @@ impl Operation for AttentionOp {
             ComputeUnit::new(
                 vec![
                     // TODO: layernorm
-                    NamedKernel::matmul(
+                    Kernel::matmul(
                         "input * w_qkv",
                         batch_size * sequence_length,
                         axes.feature,
                         qkv_out_size,
                     ),
                     // TODO: transposes
-                    NamedKernel::new(
+                    Kernel::new(
                         "attn forward",
-                        Kernel::FlashAttentionFwd {
+                        KernelOp::FlashAttentionFwd {
                             b: batch_size,
                             s: sequence_length,
                             kv_heads,
@@ -57,7 +57,7 @@ impl Operation for AttentionOp {
                         },
                     ),
                 ],
-                strategy.named_collective(
+                strategy.collective(
                     // TODO: Maybe w_out and w1 of the next linear layer should be in the same collective?
                     "w_out",
                     ShardingType::Data,
@@ -66,7 +66,7 @@ impl Operation for AttentionOp {
                 ),
             ),
             ComputeUnit::single(
-                NamedKernel::matmul(
+                Kernel::matmul(
                     "attn out * w_out",
                     batch_size * sequence_length,
                     attn_out_size,
@@ -74,7 +74,7 @@ impl Operation for AttentionOp {
                 ),
                 downstream_collective,
             ),
-            ComputeUnit::conly(strategy.named_collective(
+            ComputeUnit::conly(strategy.collective(
                 "output acts reduce",
                 ShardingType::Tensor,
                 CollectiveType::AllReduce,
@@ -82,7 +82,7 @@ impl Operation for AttentionOp {
             )),
         ];
 
-        let w_qkv_gather = strategy.named_collective(
+        let w_qkv_gather = strategy.collective(
             "w_qkv gather",
             ShardingType::Data,
             CollectiveType::AllGather,
@@ -96,8 +96,8 @@ impl Operation for AttentionOp {
         &self,
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
-        upstream_collective: Option<NamedCollective>, // This is normally an all-reduce of the previous step's gradients
-    ) -> (Vec<super::ComputeUnit>, Option<NamedCollective>) {
+        upstream_collective: Option<Collective>, // This is normally an all-reduce of the previous step's gradients
+    ) -> (Vec<super::ComputeUnit>, Option<Collective>) {
         let SeqModelSpec {
             batch,
             sequence,
@@ -118,22 +118,22 @@ impl Operation for AttentionOp {
                 vec![
                     // input gradients
                     // upstream grads have shape [batch_size * sequence_length, feature]
-                    NamedKernel::matmul(
+                    Kernel::matmul(
                         "post flash grads = upstream_grad * w_out^T",
                         batch_size * sequence_length,
                         axes.feature,
                         attn_out_size,
                     ),
                     // attn out has shape [batch_size * sequence_length, attn_out_size]
-                    NamedKernel::matmul(
+                    Kernel::matmul(
                         "w_out grads = upstream_grad^T * attn out",
                         axes.feature,
                         batch_size * sequence_length,
                         attn_out_size,
                     ),
-                    NamedKernel::new(
+                    Kernel::new(
                         "pre flash grads = flash bwd(post flash grads)",
-                        Kernel::FlashAttentionBwd {
+                        KernelOp::FlashAttentionBwd {
                             b: batch_size,
                             s: sequence_length,
                             kv_heads,
@@ -142,7 +142,7 @@ impl Operation for AttentionOp {
                         },
                     ),
                     // pre flash grads have shape [batch_size * sequence_length, qkv_out_size]
-                    NamedKernel::matmul(
+                    Kernel::matmul(
                         "input grads = pre flash grads * w_qkv^T",
                         batch_size * sequence_length,
                         qkv_out_size,
@@ -153,13 +153,13 @@ impl Operation for AttentionOp {
             ),
             ComputeUnit::single(
                 // Input has shape [batch_size * sequence_length, feature]
-                NamedKernel::matmul(
+                Kernel::matmul(
                     "w_qkv grads = input^T * pre flash grads",
                     axes.feature,
                     batch_size * sequence_length,
                     qkv_out_size,
                 ),
-                strategy.named_collective(
+                strategy.collective(
                     "w_out gather",
                     ShardingType::Data,
                     CollectiveType::AllGather,
@@ -168,7 +168,7 @@ impl Operation for AttentionOp {
             ),
         ];
 
-        let w_qkv_gather = strategy.named_collective(
+        let w_qkv_gather = strategy.collective(
             "w_qkv gather",
             ShardingType::Data,
             CollectiveType::AllGather,
