@@ -6,7 +6,7 @@ use crate::sharding::ShardStrategy;
 use crate::sharding::ShardingType;
 use crate::utils::ValidationError;
 
-use super::ComputeUnit;
+use super::{ComputeGraph, ComputeUnit};
 
 pub struct MLP {
     pub input_size: u64,
@@ -20,6 +20,7 @@ impl Operation for MLP {
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
         downstream_collective: Option<NamedCollective>,
+        is_first_step_in_batch: bool,
     ) -> (Vec<ComputeUnit>, Option<NamedCollective>) {
         let SeqModelSpec {
             batch,
@@ -36,45 +37,58 @@ impl Operation for MLP {
 
         let output_act_bytes = 2 * leaf_batch_size * leaf_seq_size * self.output_size;
 
-        let compute = vec![
-            ComputeUnit::single(
-                NamedKernel::matmul(
-                    "input * w1 matmul",
-                    leaf_batch_size * leaf_seq_size,
-                    self.input_size,
-                    leaf_intermediate_size,
-                ),
-                strategy.named_collective(
-                    "All-gather w2",
-                    ShardingType::Data,
-                    CollectiveType::AllGather,
-                    w2_bytes / batch,
-                ),
+        let (mut g, start) = ComputeGraph::new(&"mlp");
+        let a = g.single(
+            &[start],
+            NamedKernel::matmul(
+                "input * w1 matmul",
+                leaf_batch_size * leaf_seq_size,
+                self.input_size,
+                leaf_intermediate_size,
             ),
-            ComputeUnit::single(
-                NamedKernel::matmul(
-                    "intermediate * w2 matmul",
-                    leaf_batch_size * leaf_seq_size,
-                    leaf_intermediate_size,
-                    self.output_size,
-                ),
-                downstream_collective,
+            is_first_step_in_batch
+                .then(|| {
+                    strategy.named_collective(
+                        "All-gather w2",
+                        ShardingType::Data,
+                        CollectiveType::AllGather,
+                        w2_bytes / batch,
+                    )
+                })
+                .flatten(),
+        );
+        let b = g.single(
+            &[a],
+            NamedKernel::matmul(
+                "intermediate * w2 matmul",
+                leaf_batch_size * leaf_seq_size,
+                leaf_intermediate_size,
+                self.output_size,
             ),
-            ComputeUnit::conly(strategy.named_collective(
+            downstream_collective,
+        );
+        let c = g.maybe_coll(
+            b,
+            strategy.named_collective(
                 "AllReduce mlp output",
                 ShardingType::Tensor,
                 CollectiveType::AllReduce,
                 output_act_bytes,
-            )),
-        ];
-
-        let downstream_collective = strategy.named_collective(
-            "All-gather w1",
-            ShardingType::Data,
-            CollectiveType::AllGather,
-            w1_bytes / batch,
+            ),
         );
-        (compute, downstream_collective)
+        g.finish(&[c]);
+
+        let downstream_collective = is_first_step_in_batch
+            .then(|| {
+                strategy.named_collective(
+                    "All-gather w1",
+                    ShardingType::Data,
+                    CollectiveType::AllGather,
+                    w1_bytes / batch,
+                )
+            })
+            .flatten();
+        (g, downstream_collective)
     }
 
     fn backward(
@@ -82,6 +96,7 @@ impl Operation for MLP {
         axes: &SeqModelSpec,
         strategy: &ShardStrategy,
         upstream_collective: Option<NamedCollective>,
+        is_last_step_in_batch: bool,
     ) -> (Vec<ComputeUnit>, Option<NamedCollective>) {
         let SeqModelSpec {
             batch,
@@ -126,12 +141,16 @@ impl Operation for MLP {
                     leaf_intermediate_size,
                     self.input_size,
                 ),
-                strategy.named_collective(
-                    "reduce scatter w2 gradients",
-                    ShardingType::Data,
-                    CollectiveType::ReduceScatter,
-                    w2_bytes,
-                ),
+                is_last_step_in_batch
+                    .then(|| {
+                        strategy.named_collective(
+                            "reduce scatter w2 gradients",
+                            ShardingType::Data,
+                            CollectiveType::ReduceScatter,
+                            w2_bytes,
+                        )
+                    })
+                    .flatten(),
             ),
             // Gradient of w1 (input^T dl/dintermediate)
             ComputeUnit::single(
@@ -150,12 +169,16 @@ impl Operation for MLP {
             ), // TODO: layernorm
         ];
         // reduce-scatter the w1 gradients in earlier layers
-        let downstream_collective = strategy.named_collective(
-            "reduce scatter w1 gradients",
-            ShardingType::Data,
-            CollectiveType::ReduceScatter,
-            2 * self.input_size * leaf_intermediate_size,
-        );
+        let downstream_collective = is_last_step_in_batch
+            .then(|| {
+                strategy.named_collective(
+                    "reduce scatter w1 gradients",
+                    ShardingType::Data,
+                    CollectiveType::ReduceScatter,
+                    2 * self.input_size * leaf_intermediate_size,
+                )
+            })
+            .flatten();
         (compute, downstream_collective)
     }
 
