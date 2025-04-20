@@ -34,6 +34,24 @@ pub struct Kernel {
     pub op: KernelOp,
 }
 
+impl From<Kernel> for KernelOp {
+    fn from(named: Kernel) -> Self {
+        named.op
+    }
+}
+
+impl AsRef<KernelOp> for Kernel {
+    fn as_ref(&self) -> &KernelOp {
+        &self.op
+    }
+}
+
+impl AsRef<KernelOp> for KernelOp {
+    fn as_ref(&self) -> &KernelOp {
+        &self
+    }
+}
+
 impl Kernel {
     pub fn new(name: impl ToString, kernel: KernelOp) -> Self {
         Kernel {
@@ -67,22 +85,17 @@ impl Kernel {
     }
 }
 
-impl From<Kernel> for KernelOp {
-    fn from(named: Kernel) -> Self {
-        named.op
-    }
-}
 
 pub trait KernelProfile {
-    fn compute_us<I: Into<KernelOp>>(&self, kernel: I) -> u64;
+    fn compute_us<I: AsRef<KernelOp>>(&self, kernel: I) -> u64;
 }
 
 pub struct NaiveKernelProfile();
 pub const FLOPS_PER_US: f64 = 0.5 * 312e6;
 // TODO: actually use data
 impl KernelProfile for NaiveKernelProfile {
-    fn compute_us<I: Into<KernelOp>>(&self, kernel: I) -> u64 {
-        let flops = match kernel.into() {
+    fn compute_us<K: AsRef<KernelOp>>(&self, kernel: K) -> u64 {
+        let flops = match *kernel.as_ref() {
             KernelOp::MatMul { m, n, k } => 2 * m * n * k,
             KernelOp::FlashAttentionFwd {
                 b,
@@ -141,8 +154,8 @@ impl DenseLookupKernelProfile {
 }
 
 impl KernelProfile for DenseLookupKernelProfile {
-    fn compute_us<I: Into<KernelOp>>(&self, kernel: I) -> u64 {
-        let k = kernel.into();
+    fn compute_us<K: AsRef<KernelOp>>(&self, kernel: K) -> u64 {
+        let k = kernel.as_ref();
         self.records
             .get(&k)
             .map(|c| *c)

@@ -186,7 +186,7 @@ mod tests {
         let iter = combinations_with_replacement(numbers, k);
 
         let result: Vec<Vec<i32>> = iter.collect();
-        let expected : Vec<Vec<i32>> = vec![vec![]];
+        let expected: Vec<Vec<i32>> = vec![vec![]];
         assert_eq!(result, expected);
     }
 

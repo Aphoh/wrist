@@ -36,10 +36,7 @@ where
         axes: &crate::sharding::SeqModelSpec,
         strategy: &crate::sharding::ShardStrategy,
         upstream_collective: Option<crate::network::Collective>, // This is normally an all-reduce of the previous step's gradients
-    ) -> (
-        Vec<super::ComputeUnit>,
-        Option<crate::network::Collective>,
-    ) {
+    ) -> (Vec<super::ComputeUnit>, Option<crate::network::Collective>) {
         // cu2 executes first, does the collective from upstream
         let (mut cu2, coll2) = self.op2.backward(axes, strategy, upstream_collective);
         let (cu1, coll1) = self.op1.backward(axes, strategy, coll2);

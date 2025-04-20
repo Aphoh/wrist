@@ -1,0 +1,142 @@
+use petgraph::{graph::NodeIndex as PetNodeIndex, Directed, Graph};
+
+use crate::{
+    kernels::{Kernel, KernelProfile},
+    network::{Collective, Network},
+};
+
+pub enum GraphNode {
+    Kernel {
+        kernel: Kernel,
+        time_us: u64,
+    },
+    Collective {
+        collective: Collective,
+        time_us: u64,
+    },
+    Start,
+    End,
+}
+
+impl GraphNode {
+    pub fn time_us(&self) -> u64 {
+        match self {
+            GraphNode::Kernel { time_us, .. } => *time_us,
+            GraphNode::Collective { time_us, .. } => *time_us,
+            GraphNode::Start => 0,
+            GraphNode::End => 0,
+        }
+    }
+}
+
+type NodeId = PetNodeIndex<u32>;
+
+pub struct DataItem {
+    pub name: String,
+    pub node_id: NodeId,
+}
+
+pub struct Subgraph {
+    scan: usize,
+    graph: Graph<GraphNode, String, Directed>,
+    start_id: NodeId,
+    end_id: NodeId,
+}
+
+impl Subgraph {
+    pub fn new(scan: usize) -> (Self, DataItem) {
+        let mut graph = Graph::new();
+        let start_id = graph.add_node(GraphNode::Start);
+        let end_id = graph.add_node(GraphNode::End);
+        (
+            Subgraph {
+                scan,
+                graph,
+                start_id,
+                end_id,
+            },
+            DataItem {
+                name: "start".to_string(),
+                node_id: start_id,
+            },
+        )
+    }
+
+    pub fn connect(&mut self, edge: impl ToString, from: NodeId, to: NodeId) {
+        self.graph.add_edge(from, to, edge.to_string());
+    }
+
+    pub fn kernel(
+        &mut self,
+        from: impl AsRef<[DataItem]>,
+        dest_name: impl ToString,
+        kernel: Kernel,
+        prof: &impl KernelProfile,
+    ) -> DataItem {
+        let time_us = prof.compute_us(&kernel);
+        self.add_node(
+            from,
+            dest_name,
+            GraphNode::Kernel {
+                kernel: kernel.clone(),
+                time_us,
+            },
+        )
+    }
+
+    pub fn collective(
+        &mut self,
+        from: impl AsRef<[DataItem]>,
+        dest_name: impl ToString,
+        collective: Collective,
+        prof: &impl Network,
+    ) -> DataItem {
+        let time_us = prof.measure_one(&collective);
+        self.add_node(
+            from,
+            dest_name,
+            GraphNode::Collective {
+                collective,
+                time_us,
+            },
+        )
+    }
+
+    pub fn add_node(
+        &mut self,
+        from: impl AsRef<[DataItem]>,
+        dest_name: impl ToString,
+        node: GraphNode,
+    ) -> DataItem {
+        let node_id = self.graph.add_node(node);
+        for from_di in from.as_ref() {
+            self.graph
+                .add_edge(from_di.node_id, node_id, from_di.name.clone());
+        }
+        DataItem {
+            name: dest_name.to_string(),
+            node_id,
+        }
+    }
+
+    pub fn finish(&mut self, outputs: impl AsRef<[DataItem]>) {
+        if self.graph.neighbors(self.start_id).count() == 0 {
+            panic!("Subgraph has non start nodes"); // TODO: better error handling
+        }
+        if self.graph.neighbors(self.end_id).count() > 0 {
+            panic!("Subgraph already finished"); // TODO: better error handling
+        }
+        if outputs.as_ref().is_empty() {
+            panic!("Must provide end nodes"); // TODO: better error handling
+        }
+
+        for node in outputs.as_ref() {
+            self.graph
+                .add_edge(self.end_id, node.node_id, node.name.clone());
+        }
+    }
+}
+
+pub struct ComputeGraph {
+    subgraphs: Vec<Subgraph>,
+}

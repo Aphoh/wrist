@@ -1,5 +1,5 @@
 use crate::kernels::Kernel;
-use crate::network::{CollectiveType, Collective};
+use crate::network::{Collective, CollectiveType};
 use crate::ops::{MemoryProfile, Operation};
 use crate::sharding::SeqModelSpec;
 use crate::sharding::ShardStrategy;

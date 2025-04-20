@@ -1,4 +1,4 @@
-use crate::network::{CollectiveType, Collective};
+use crate::network::{Collective, CollectiveType};
 
 #[derive(Clone)]
 pub struct SeqModelSpec {
@@ -134,7 +134,6 @@ impl ShardStrategy {
             stride,
             piece_bytes,
             n_gpus,
-            }
-        )
+        })
     }
 }

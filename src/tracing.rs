@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use crate::{
-    kernels::{KernelProfile, Kernel},
-    network::{Network, Collective},
+    kernels::{Kernel, KernelProfile},
+    network::{Collective, Network},
     ops::ComputeUnit,
     sharding::{SeqModelSpec, ShardStrategy},
 };

@@ -1,6 +1,6 @@
 use crate::{
-    kernels::{KernelOp, Kernel},
-    network::{CollectiveType, Collective},
+    kernels::{Kernel, KernelOp},
+    network::{Collective, CollectiveType},
     ops::ComputeUnit,
     sharding::{SeqModelSpec, ShardStrategy, ShardingType},
     utils::ValidationError,

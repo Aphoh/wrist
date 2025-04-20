@@ -5,6 +5,7 @@ use tracing::Traceable;
 
 pub mod combinations;
 pub mod data;
+pub mod graph;
 pub mod kernels;
 pub mod manual_models;
 pub(crate) mod network;
