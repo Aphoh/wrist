@@ -85,7 +85,6 @@ impl Kernel {
     }
 }
 
-
 pub trait KernelProfile {
     fn compute_us<I: AsRef<KernelOp>>(&self, kernel: I) -> u64;
 }
