@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::{BufReader, Read},
+    io::BufReader,
     path::PathBuf,
     process::exit,
 };

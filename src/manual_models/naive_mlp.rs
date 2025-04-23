@@ -1,7 +1,7 @@
 use crate::{
     graph::{ComputeGraph, Subgraph},
     kernels::{Kernel, KernelProfile},
-    network::{Collective, Network},
+    network::Network,
     sharding::{SeqModelSpec, ShardStrategy, ShardingType},
     solver::Solveable,
     tracing::Traceable,
