@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+import "google/protobuf/struct.proto"; // For NullValue
+
+// Represents a value within the TorchTitan system, potentially
+// originating from Python/Torch graph nodes or arguments.
+// This version uses 'oneof' for efficiency and type safety.
+message NodeValue {
+  oneof value_oneof {
+    // Represents Python's None or SQL NULL.
+    google.protobuf.NullValue null_value = 1;
+
+    // Basic scalar types
+    bool bool_value = 2;
+    int64 int_value = 3;       // Corresponds to Python int / torch int64
+    double float_value = 4;   // Corresponds to Python float / torch float64/double
+    string string_value = 5;
+
+    // Specific ML/Torch types (represented as strings for flexibility)
+    // Could be enums if the set of values is strictly limited and known.
+    string device_value = 6;  // e.g., "cuda:0", "cpu", "meta"
+    string dtype_value = 7;   // e.g., "torch.float32", "torch.int64"
+    string layout_value = 12;
+    string memory_format_value = 13;
+
+    // Tensor/Array Shape (replaces size_value)
+    // Represents torch.Size or a tuple of integers for dimensions.
+    TensorShape shape_value = 8;
+
+    // Collections (List/Tuple unified)
+    // Represents a Python list or tuple containing NodeValue elements.
+    // If distinguishing list vs tuple is absolutely critical for the consumer,
+    // you could have separate ListValue and TupleValue messages here.
+    SequenceValue sequence_value = 9;
+
+    // Reference to another node/entity within the system
+    // (e.g., the string name/ID of another FX node).
+    string node_ref_value = 10;
+
+    // Fallback string representation
+    // Useful for types not explicitly handled or for debugging.
+    string repr_value = 11;
+  }
+}
+
+// Represents a sequence of dimensions (e.g., tensor shape)
+message TensorShape {
+  repeated int64 dims = 1;
+}
+
+// Represents an ordered sequence (list or tuple) of NodeValues
+message SequenceValue {
+  repeated NodeValue elements = 1;
+}
+
+// Represents a named value in a node (arguments, kwargs, etc.)
+message NamedNodeValue {
+  string name = 1;
+  NodeValue value = 2;
+}
+
+// Represents a node in the FX graph
+message NodeData {
+  string name = 1;
+  string op = 2;  // "placeholder", "call_function", etc.
+  string target = 3;
+  repeated NodeValue args = 4;
+  repeated NamedNodeValue kwargs = 5;
+  repeated int64 output_shape = 6;
+  string output_dtype = 7;
+  string output_device = 8;
+  repeated int64 output_stride = 9;
+}
+
+// Represents an FX graph
+message GraphData {
+  repeated NodeData nodes = 1;
+  int32 output_node_index = 2;
+}
+
+// Represents an FX GraphModule
+message GraphModuleData {
+  GraphData graph = 1;
+  repeated NamedNodeValue user_preserved_attributes = 2;
+}
+
+message ParallelConfig {
+  int32 dp_replicate = 1;
+  int32 dp_shard = 2;
+  int32 cp = 3;
+  int32 tp = 4;
+  int32 pp = 5;
+  int32 world_size = 6;
+  bool enable_loss_parallel = 7;
+}
+
+message TraceResult {
+    ParallelConfig parallel_dims = 1;
+    GraphModuleData graph_module = 2;
+}

@@ -1,9 +1,8 @@
-use serde::Serialize;
 
 use crate::{
     graph::ComputeGraph,
-    kernels::{Kernel, KernelProfile},
-    network::{Collective, Network},
+    kernels::KernelProfile,
+    network::Network,
     sharding::{SeqModelSpec, ShardStrategy},
 };
 

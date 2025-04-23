@@ -1,19 +1,4 @@
-use manual_models::naive_mlp::NaiveMLP;
-use network::RegressionNetwork;
-use sharding::SeqModelSpec;
-use tracing::Traceable;
-
-pub mod combinations;
-pub mod data;
-pub mod graph;
-pub mod kernels;
-pub mod manual_models;
-pub(crate) mod network;
-pub mod sharding;
-pub mod solver;
-mod tests;
-pub mod tracing;
-pub mod utils;
+use wrist::{kernels, manual_models::naive_mlp::NaiveMLP, network::RegressionNetwork, sharding::SeqModelSpec, solver, tracing::Traceable};
 
 fn main() {
     let axes = SeqModelSpec {
