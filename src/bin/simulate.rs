@@ -1,4 +1,7 @@
-use wrist::{kernels, manual_models::naive_mlp::NaiveMLP, network::RegressionNetwork, sharding::SeqModelSpec, solver, tracing::Traceable};
+use wrist::{
+    kernels, manual_models::naive_mlp::NaiveMLP, network::RegressionNetwork,
+    sharding::SeqModelSpec, solver, tracing::Traceable,
+};
 
 fn main() {
     let axes = SeqModelSpec {

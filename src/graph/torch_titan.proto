@@ -25,7 +25,7 @@ message NodeValue {
 
     // Tensor/Array Shape (replaces size_value)
     // Represents torch.Size or a tuple of integers for dimensions.
-    TensorShape shape_value = 8;
+    IntList shape_value = 8;
 
     // Collections (List/Tuple unified)
     // Represents a Python list or tuple containing NodeValue elements.
@@ -44,7 +44,7 @@ message NodeValue {
 }
 
 // Represents a sequence of dimensions (e.g., tensor shape)
-message TensorShape {
+message IntList {
   repeated int64 dims = 1;
 }
 
@@ -59,6 +59,21 @@ message NamedNodeValue {
   NodeValue value = 2;
 }
 
+message CollectiveMeta {
+  repeated int32 group_ranks = 1;
+  int64 comm_tensor_size = 2;
+  string group_desc = 3;
+  string group_name = 4;
+}
+
+message TensorInfo {
+  IntList shape = 1;
+  IntList stride = 2;
+  string dtype = 3;
+  string device = 4;
+  string layout = 5;
+}
+
 // Represents a node in the FX graph
 message NodeData {
   string name = 1;
@@ -66,10 +81,8 @@ message NodeData {
   string target = 3;
   repeated NodeValue args = 4;
   repeated NamedNodeValue kwargs = 5;
-  repeated int64 output_shape = 6;
-  string output_dtype = 7;
-  string output_device = 8;
-  repeated int64 output_stride = 9;
+  optional TensorInfo tensor_info = 6; 
+  optional CollectiveMeta collective_meta = 7; 
 }
 
 // Represents an FX graph
@@ -82,6 +95,7 @@ message GraphData {
 message GraphModuleData {
   GraphData graph = 1;
   repeated NamedNodeValue user_preserved_attributes = 2;
+  map<string, TensorInfo> buffers = 3; 
 }
 
 message ParallelConfig {

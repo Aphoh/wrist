@@ -2,3 +2,7 @@
 *.csv
 trace.json
 .vscode/
+traces/
+.DS_Store
+**.pyc
+__pycache__/

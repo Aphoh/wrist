@@ -18,6 +18,7 @@ pub enum GraphNode {
         collective: Collective,
         time_us: u64,
     },
+    Other(String),
     Start,
     End,
 }
@@ -27,6 +28,7 @@ impl GraphNode {
         match self {
             GraphNode::Kernel { time_us, .. } => *time_us,
             GraphNode::Collective { time_us, .. } => *time_us,
+            GraphNode::Other(_) => 0,
             GraphNode::Start => 0,
             GraphNode::End => 0,
         }
@@ -43,18 +45,20 @@ impl GraphNode {
 impl std::fmt::Debug for GraphNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GraphNode::Kernel { kernel, time_us } => {
-                f.debug_struct("Kernel")
-                    .field("kernel", kernel)
-                    .field("time_us", time_us)
-                    .finish()
-            }
-            GraphNode::Collective { collective, time_us } => {
-                f.debug_struct("Collective")
-                    .field("collective", collective)
-                    .field("time_us", time_us)
-                    .finish()
-            }
+            GraphNode::Kernel { kernel, time_us } => f
+                .debug_struct("Kernel")
+                .field("kernel", kernel)
+                .field("time_us", time_us)
+                .finish(),
+            GraphNode::Collective {
+                collective,
+                time_us,
+            } => f
+                .debug_struct("Collective")
+                .field("collective", collective)
+                .field("time_us", time_us)
+                .finish(),
+            GraphNode::Other(name) => write!(f, "Other({})", name),
             GraphNode::Start => write!(f, "Start"),
             GraphNode::End => write!(f, "End"),
         }
@@ -63,6 +67,7 @@ impl std::fmt::Debug for GraphNode {
 
 type NodeId = PetNodeIndex<u32>;
 
+#[derive(Debug, Clone)]
 pub struct DataItem {
     pub name: String,
     pub node_id: NodeId,
@@ -100,9 +105,9 @@ impl Subgraph {
         self.graph.add_edge(from, to, edge.to_string());
     }
 
-    pub fn kernel(
+    pub fn kernel<'a>(
         &mut self,
-        from: impl AsRef<[DataItem]>,
+        from: impl AsRef<[&'a DataItem]>,
         dest_name: impl ToString,
         kernel: Kernel,
         prof: &impl KernelProfile,
@@ -118,9 +123,9 @@ impl Subgraph {
         )
     }
 
-    pub fn collective(
+    pub fn collective<'a>(
         &mut self,
-        from: impl AsRef<[DataItem]>,
+        from: impl AsRef<[&'a DataItem]>,
         dest_name: impl ToString,
         collective: Collective,
         prof: &impl Network,
@@ -136,9 +141,9 @@ impl Subgraph {
         )
     }
 
-    pub fn add_node(
+    fn add_node<'a>(
         &mut self,
-        from: impl AsRef<[DataItem]>,
+        from: impl AsRef<[&'a DataItem]>,
         dest_name: impl ToString,
         node: GraphNode,
     ) -> DataItem {
@@ -156,10 +161,7 @@ impl Subgraph {
         }
     }
 
-    pub fn remeasure_network(
-        &mut self,
-        network: &impl Network,
-    ) {
+    pub fn remeasure_network(&mut self, network: &impl Network) {
         for node_id in self.collective_ids.iter() {
             if let GraphNode::Collective { collective, .. } = &mut self.graph[*node_id] {
                 let time_us = network.measure_one(collective);
@@ -169,10 +171,20 @@ impl Subgraph {
     }
 
     pub fn finish(&mut self, outputs: impl AsRef<[DataItem]>) {
-        if self.graph.neighbors_directed(self.start_id, Direction::Outgoing).count() == 0 {
+        if self
+            .graph
+            .neighbors_directed(self.start_id, Direction::Outgoing)
+            .count()
+            == 0
+        {
             panic!("Subgraph has non start nodes"); // TODO: better error handling
         }
-        if self.graph.neighbors_directed(self.end_id, Direction::Incoming).count() > 0 {
+        if self
+            .graph
+            .neighbors_directed(self.end_id, Direction::Incoming)
+            .count()
+            > 0
+        {
             panic!("Subgraph already finished"); // TODO: better error handling
         }
         if outputs.as_ref().is_empty() {
@@ -184,9 +196,12 @@ impl Subgraph {
                 .add_edge(node.node_id, self.end_id, node.name.clone());
         }
     }
-    
+
     fn is_finished(&self) -> bool {
-        self.graph.neighbors_directed(self.end_id, Direction::Incoming).count() > 0
+        self.graph
+            .neighbors_directed(self.end_id, Direction::Incoming)
+            .count()
+            > 0
     }
 }
 
@@ -220,7 +235,8 @@ impl ComputeGraph {
                 }
                 max_time.insert(node_id, input_time + node.time_us());
             }
-            total_time += max_time.get(&subgraph.end_id).expect("Must hit end node") * subgraph.scan;
+            total_time +=
+                max_time.get(&subgraph.end_id).expect("Must hit end node") * subgraph.scan;
         }
         total_time
     }

@@ -37,13 +37,13 @@ impl Traceable for NaiveMLP {
         let intermediate = self.intermediate_size / splits.feature;
         let batch = axes.batch * axes.sequence / splits.batch / splits.sequence;
         let fwd1 = fwd.kernel(
-            [start],
+            [&start],
             "intermediate",
             Kernel::matmul("w1", batch, axes.feature, intermediate),
             prof,
         );
         let fwd2 = fwd.kernel(
-            [fwd1],
+            [&fwd1],
             "output",
             Kernel::matmul("w2", batch, intermediate, axes.feature),
             prof,
@@ -55,7 +55,7 @@ impl Traceable for NaiveMLP {
             crate::network::CollectiveType::AllReduce,
             bytes,
         ) {
-            let reduce = fwd.collective([fwd2], "reduce", coll, network);
+            let reduce = fwd.collective([&fwd2], "reduce", coll, network);
             fwd.finish([reduce])
         } else {
             fwd.finish([fwd2]);
