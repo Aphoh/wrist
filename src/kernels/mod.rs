@@ -2,11 +2,23 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+// TODO: this is currently too rigid
 pub enum KernelOp {
     MatMul {
         m: u64,
         k: u64,
         n: u64,
+        //TODO: stride/axis order
+    },
+    EmbeddingFwd {
+        batch: u64,
+        num_embeddings: u64,
+        dim: u64,
+    },
+    EmbeddingBwd {
+        batch: u64,
+        num_embeddings: u64,
+        dim: u64,
     },
     FlashAttentionFwd {
         b: u64,
@@ -25,6 +37,10 @@ pub enum KernelOp {
     LayerNorm {
         n: u64,
         hidden: u64,
+    },
+    AdamW {
+        param_bytes: u64,
+        grad_bytes: u64,
     },
 }
 
@@ -83,6 +99,58 @@ impl Kernel {
             },
         )
     }
+
+    pub fn flash_attention_bwd(
+        name: impl ToString,
+        b: u64,
+        s: u64,
+        kv_heads: u64,
+        query_heads: u64,
+        head_dim: u64,
+    ) -> Self {
+        Kernel::new(
+            name,
+            KernelOp::FlashAttentionBwd {
+                b,
+                s,
+                kv_heads,
+                query_heads,
+                head_dim,
+            },
+        )
+    }
+
+    pub fn embedding(name: String, batch: u64, num_embeddings: u64, dim: u64) -> Kernel {
+        Kernel::new(
+            name,
+            KernelOp::EmbeddingFwd {
+                batch,
+                num_embeddings,
+                dim,
+            },
+        )
+    }
+
+    pub fn embedding_bwd(name: String, batch: u64, num_embeddings: u64, dim: u64) -> Kernel {
+        Kernel::new(
+            name,
+            KernelOp::EmbeddingBwd {
+                batch,
+                num_embeddings,
+                dim,
+            },
+        )
+    }
+
+    pub fn adamw(name: String, param_bytes: u64, grad_bytes: u64) -> Self {
+        Self::new(
+            name,
+            KernelOp::AdamW {
+                param_bytes,
+                grad_bytes,
+            },
+        )
+    }
 }
 
 pub trait KernelProfile {
@@ -111,6 +179,20 @@ impl KernelProfile for NaiveKernelProfile {
                 head_dim,
                 ..
             } => 2 * flash_attention_forward_flops(b, s, query_heads, head_dim),
+            KernelOp::EmbeddingFwd {
+                batch,
+                num_embeddings,
+                dim,
+            } => 2 * batch * num_embeddings * dim,
+            KernelOp::EmbeddingBwd {
+                batch,
+                num_embeddings,
+                dim,
+            } => 2 * batch * num_embeddings * dim,
+            KernelOp::AdamW {
+                param_bytes,
+                grad_bytes,
+            } => 2 * param_bytes + grad_bytes,
         };
         return (flops as f64 / FLOPS_PER_US) as u64;
     }

@@ -5,9 +5,9 @@ use std::{
     process::exit,
 };
 
-use wrist::graph::fx::TraceBuilder;
 use anyhow::{Context, Result};
 use clap::Parser;
+use wrist::graph::fx::TraceBuilder;
 
 /// A simple program to parse and validate TraceResult protobuf messages from .bin files.
 #[derive(Parser, Debug)]

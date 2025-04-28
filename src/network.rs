@@ -7,6 +7,7 @@ pub enum CollectiveType {
     AllReduce,
     ReduceScatter,
     Ring,
+    AllToAllSingle,
 }
 
 const COLLECTIVES: [&'static str; 4] = ["all_gather", "all_reduce", "reduce_scatter", "ring"];
@@ -45,6 +46,21 @@ impl Collective {
             group_stride: stride,
             piece_bytes,
             group_size: tier,
+        }
+    }
+
+    pub(crate) fn reduce_scatter(
+        name: String,
+        piece_bytes: u64,
+        group_size: u32,
+        group_stride: u32,
+    ) -> Collective {
+        Self {
+            name,
+            ctype: CollectiveType::ReduceScatter,
+            group_stride,
+            piece_bytes,
+            group_size,
         }
     }
 }
