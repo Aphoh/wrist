@@ -131,9 +131,9 @@ impl ShardStrategy {
         Some(Collective {
             name: name.to_string(),
             ctype,
-            stride,
+            group_stride: stride,
             piece_bytes,
-            n_gpus,
+            group_size: n_gpus,
         })
     }
 }

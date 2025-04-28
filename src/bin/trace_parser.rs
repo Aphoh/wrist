@@ -5,9 +5,9 @@ use std::{
     process::exit,
 };
 
+use wrist::graph::fx::TraceBuilder;
 use anyhow::{Context, Result};
 use clap::Parser;
-use wrist::graph::fx::parse_trace_result;
 
 /// A simple program to parse and validate TraceResult protobuf messages from .bin files.
 #[derive(Parser, Debug)]
@@ -40,7 +40,7 @@ fn main() -> Result<()> {
             let file = File::open(&file_path).context("Failed to open file")?;
             let mut reader = BufReader::new(file);
 
-            match parse_trace_result(&mut reader) {
+            match TraceBuilder::parse(&mut reader) {
                 Ok(_) => {
                     println!("  Successfully parsed.");
                 }

@@ -22,19 +22,19 @@ pub struct Collective {
     /// Stride 4, Tier 1: [0, 4], [1, 5], [2, 6], [3, 7]
     /// Stride 2, Tier 1: [0, 2], [1, 3], [4, 6], [5, 7]
     /// Stride 1, Tier 1: [0, 1], [2, 3], [4, 5], [6, 7]
-    pub stride: u32,
+    pub group_stride: u32,
     pub piece_bytes: u64,
-    pub n_gpus: u32,
+    pub group_size: u32,
 }
 
 impl Collective {
-    pub fn all_gather(name: String, piece_bytes: u64, tier: u32, stride: u32) -> Self {
+    pub fn all_gather(name: String, piece_bytes: u64, group_size: u32, stride: u32) -> Self {
         Self {
             name,
             ctype: CollectiveType::AllGather,
-            stride,
+            group_stride: stride,
             piece_bytes,
-            n_gpus: tier,
+            group_size,
         }
     }
 
@@ -42,9 +42,9 @@ impl Collective {
         Self {
             name,
             ctype: CollectiveType::AllReduce,
-            stride,
+            group_stride: stride,
             piece_bytes,
-            n_gpus: tier,
+            group_size: tier,
         }
     }
 }
@@ -137,8 +137,8 @@ impl Network for RegressionNetwork {
     fn measure_one(&self, c: &Collective) -> u64 {
         let key = RegressionKey {
             ctype: c.ctype,
-            stride: c.stride,
-            n_gpus: c.n_gpus,
+            stride: c.group_stride,
+            n_gpus: c.group_size,
         };
         let regression = self.regressions.get(&key);
         if regression.is_none() {
