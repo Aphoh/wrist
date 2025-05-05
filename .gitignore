@@ -6,3 +6,4 @@ traces/
 .DS_Store
 **.pyc
 __pycache__/
+viz/

@@ -49,7 +49,7 @@ impl Collective {
         }
     }
 
-    pub(crate) fn reduce_scatter(
+    pub fn reduce_scatter(
         name: String,
         piece_bytes: u64,
         group_size: u32,
@@ -64,15 +64,8 @@ impl Collective {
         }
     }
 }
-pub trait Network {
-    fn measure_maybe(&self, collective: &Option<Collective>) -> u64 {
-        collective
-            .as_ref()
-            .map(|c| self.measure_one(c))
-            .unwrap_or(0)
-    }
-    fn measure_one(&self, collective: &Collective) -> u64;
-    fn n_tiers(&self) -> u32;
+pub trait Network: Sync {
+    fn measure(&self, collective: &Collective) -> Option<u64>;
 }
 
 pub struct LogLogRegression {
@@ -119,11 +112,10 @@ struct RegressionKey {
 
 pub struct RegressionNetwork {
     regressions: BTreeMap<RegressionKey, LogLogRegression>,
-    n_tiers: u32,
 }
 
 impl RegressionNetwork {
-    pub fn from_file<P: AsRef<Path>>(n_tiers: u32, path: P) -> Self {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Self {
         let mut reader = csv::Reader::from_path(path).expect("Failed to read regression file");
         let mut regressions = BTreeMap::new();
         for record in reader.deserialize() {
@@ -138,36 +130,110 @@ impl RegressionNetwork {
             }
         }
 
-        RegressionNetwork {
-            n_tiers,
-            regressions,
-        }
+        RegressionNetwork { regressions }
     }
 }
 
 impl Network for RegressionNetwork {
-    fn n_tiers(&self) -> u32 {
-        self.n_tiers
-    }
-
-    fn measure_one(&self, c: &Collective) -> u64 {
+    fn measure(&self, c: &Collective) -> Option<u64> {
         let key = RegressionKey {
             ctype: c.ctype,
             stride: c.group_stride,
             n_gpus: c.group_size,
         };
-        let regression = self.regressions.get(&key);
-        if regression.is_none() {
-            println!("No regression for {:?}", key);
-            return 0;
-        }
-        let regression = regression.unwrap();
+        let regression = self.regressions.get(&key)?;
         // We go in units of megabytes = 2^20 bytes, so we should subtract 20 and max with 0.
         let piece_log = (c.piece_bytes as f64).log2() - 20.0;
         let piece_log = piece_log.max(0.0);
         let latency_s = (regression.log_intercept + regression.log_coeff * piece_log)
             .exp2()
             .max(regression.min);
-        (1e6 * latency_s) as u64
+        Some((1e6 * latency_s) as u64)
+    }
+}
+
+/// A simple network model that assumes constant latency and bandwidth between nodes.
+pub struct NaiveNetwork {
+    /// Base latency in microseconds for any communication
+    latency_us: f64,
+    /// Bandwidth in bytes per microsecond
+    bandwidth_bytes_per_us: f64,
+}
+
+impl NaiveNetwork {
+    /// Create a new NaiveNetwork with the given latency (in microseconds) and bandwidth (in GB/s)
+    pub fn new(latency_us: f64, bandwidth_gb_per_s: f64) -> Self {
+        // Convert GB/s to bytes per microsecond (MB/s)
+        let bandwidth_bytes_per_us = bandwidth_gb_per_s * 1000.0;
+        Self {
+            latency_us,
+            bandwidth_bytes_per_us,
+        }
+    }
+}
+
+impl Network for NaiveNetwork {
+    fn measure(&self, c: &Collective) -> Option<u64> {
+        let n = c.group_size as f64;
+        let data_bytes = c.piece_bytes as f64;
+        let latency_us = self.latency_us as f64;
+
+        // Base transfer time for the data
+        let transfer_time = |bytes: f64| -> f64 { bytes / self.bandwidth_bytes_per_us };
+
+        let time_us: f64 = match c.ctype {
+            CollectiveType::AllGather => {
+                // Each node receives data from all other nodes
+                latency_us + transfer_time(data_bytes * (n - 1.0))
+            }
+            CollectiveType::AllReduce => {
+                // Can be modeled as a reduce-scatter followed by all-gather
+                // First, reduce-scatter phase (each node sends/receives (n-1)/n of data)
+                let reduce_scatter_time = latency_us + transfer_time(data_bytes * (n - 1.0) / n);
+                // Then, all-gather phase (each node sends/receives (n-1)/n of data)
+                let all_gather_time = latency_us + transfer_time(data_bytes * (n - 1.0) / n);
+                // Total time is the sum
+                reduce_scatter_time + all_gather_time
+            }
+            CollectiveType::ReduceScatter => {
+                // Each node sends (n-1)/n of its data and receives 1/n of data from every other node
+                latency_us + transfer_time(data_bytes * (n - 1.0) / n)
+            }
+            CollectiveType::Ring => {
+                // In a ring algorithm, each node sends/receives data in n-1 steps
+                latency_us * (n - 1.0) + transfer_time(data_bytes * 2.0 * (n - 1.0) / n)
+            }
+            CollectiveType::AllToAllSingle => {
+                // Each node sends a distinct piece of data to every other node
+                latency_us + transfer_time(data_bytes * (n - 1.0))
+            }
+        };
+
+        Some(time_us as u64)
+    }
+}
+
+/// Enum wrapper for Network implementations to enable static dispatch
+pub enum NetworkImpl {
+    Regression(RegressionNetwork),
+    Naive(NaiveNetwork),
+}
+
+impl NetworkImpl {
+    /// Create a NetworkImpl from an optional path or use default NaiveNetwork
+    pub fn from_file_or_default(path: Option<impl AsRef<Path>>) -> Self {
+        match path {
+            Some(path) => NetworkImpl::Regression(RegressionNetwork::from_file(path)),
+            None => NetworkImpl::Naive(NaiveNetwork::new(10.0, 1.0)),
+        }
+    }
+}
+
+impl Network for NetworkImpl {
+    fn measure(&self, collective: &Collective) -> Option<u64> {
+        match self {
+            NetworkImpl::Regression(n) => n.measure(collective),
+            NetworkImpl::Naive(n) => n.measure(collective),
+        }
     }
 }

@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
 };
-use torch_titan::{NodeData, NodeValue, TensorInfo, TraceResult};
+use torch_titan::{NodeData, NodeValue, ParallelConfig, TensorInfo, TraceResult};
 
 pub struct TraceBuilder {
     trace_result: TraceResult,
@@ -29,6 +29,10 @@ fn filter_node_refs<'a>(nvs: impl Iterator<Item = &'a NodeValue>) -> impl Iterat
 }
 
 impl TraceBuilder {
+    pub fn parallel_dims(&self) -> &ParallelConfig {
+        &self.trace_result.parallel_dims.as_ref().unwrap()
+    }
+
     pub fn parse(file: &mut dyn Read) -> Result<Self> {
         let trace_result = TraceResult::parse_from_reader(file)?;
         let processed = Default::default();
@@ -65,13 +69,6 @@ impl TraceBuilder {
         self.tensor_info_from_ref(nd.args[arg].node_ref_value())
             .with_context(|| format!("Failed to get tensor info from {} arg {}", nd.name, arg))
     }
-
-    fn get_node_ref<'a>(&'a self, nv: &NodeValue) -> Option<&'a NodeData> {
-        if !nv.has_node_ref_value() {
-            return None;
-        }
-        self.processed.get(nv.node_ref_value())
-    }
     fn parse_call_fn(&self, nd: &NodeData) -> Result<GraphNode> {
         if let Some(node) = self.handle_collective_ops(nd)? {
             return Ok(node);
@@ -82,9 +79,6 @@ impl TraceBuilder {
         if let Some(node) = self.handle_mat_operations(nd)? {
             return Ok(node);
         }
-
-        // Add more specialized handler methods as needed:
-        // if let Some(node) = self.handle_conv_ops(nd)? { return Ok(node); }
 
         // Default case - unknown operation
         Ok(GraphNode::Other(nd.target.clone()))
@@ -114,16 +108,16 @@ impl TraceBuilder {
         if group_size > 1 {
             group_stride = (ranks[1] - ranks[0]).try_into()?;
         }
-        return Ok(Some(GraphNode::Collective {
-            collective: Collective {
+        return Ok(Some(
+            Collective {
                 name: nd.name.clone(),
                 ctype,
                 group_stride,
                 piece_bytes,
                 group_size,
-            },
-            time_us: 1,
-        }));
+            }
+            .into(),
+        ));
     }
 
     fn handle_attention_ops(&self, nd: &NodeData) -> Result<Option<GraphNode>> {
@@ -134,34 +128,34 @@ impl TraceBuilder {
                 let qinfo = self.tensor_info_from_arg(nd, 0)?;
                 let kinfo = self.tensor_info_from_arg(nd, 1)?;
                 //let kv_info = processed.get(&)
-                Ok(Some(GraphNode::Kernel {
-                    kernel: Kernel::flash_attention(
+                Ok(Some(
+                    Kernel::flash_attention(
                         nd.name.to_string(),
                         qinfo.shape.dims[0] as u64,
                         qinfo.shape.dims[2] as u64,
                         kinfo.shape.dims[1] as u64,
                         qinfo.shape.dims[1] as u64,
                         qinfo.shape.dims[3] as u64,
-                    ),
-                    time_us: 1,
-                }))
+                    )
+                    .into(),
+                ))
             }
             "_scaled_dot_product_efficient_attention_backward.default"
             | "_scaled_dot_product_flash_attention_backward.default" => {
                 // Earlier arguments here are grad tensors
-                let qinfo = self.tensor_info_from_arg(nd, 4)?;
-                let kinfo = self.tensor_info_from_arg(nd, 5)?;
-                Ok(Some(GraphNode::Kernel {
-                    kernel: Kernel::flash_attention_bwd(
+                let qinfo = self.tensor_info_from_arg(nd, 1)?;
+                let kinfo = self.tensor_info_from_arg(nd, 2)?;
+                Ok(Some(
+                    Kernel::flash_attention_bwd(
                         nd.name.to_string(),
                         qinfo.shape.dims[0] as u64,
                         qinfo.shape.dims[2] as u64,
                         kinfo.shape.dims[1] as u64,
                         qinfo.shape.dims[1] as u64,
                         qinfo.shape.dims[3] as u64,
-                    ),
-                    time_us: 1,
-                }))
+                    )
+                    .into(),
+                ))
             }
             _ => Ok(None),
         }
@@ -192,28 +186,28 @@ impl TraceBuilder {
             "matmul" => {
                 let ainfo = self.tensor_info_from_arg(nd, 0)?;
                 let binfo = self.tensor_info_from_arg(nd, 1)?;
-                Ok(Some(GraphNode::Kernel {
-                    kernel: Kernel::matmul(
+                Ok(Some(
+                    Kernel::matmul(
                         nd.name.clone(),
                         ainfo.shape.dims[0] as u64,
                         ainfo.shape.dims[1] as u64,
                         binfo.shape.dims[1] as u64,
-                    ),
-                    time_us: 1,
-                }))
+                    )
+                    .into(),
+                ))
             }
             "embedding.default" => {
                 let winfo = self.tensor_info_from_arg(nd, 0)?;
                 let inds_info = self.tensor_info_from_arg(nd, 1)?;
-                Ok(Some(GraphNode::Kernel {
-                    kernel: Kernel::embedding(
+                Ok(Some(
+                    Kernel::embedding(
                         nd.name.clone(),
                         inds_info.shape.dims.iter().product::<i64>() as _,
                         winfo.shape.dims[0] as _,
                         winfo.shape.dims[1] as _,
-                    ),
-                    time_us: 1,
-                }))
+                    )
+                    .into(),
+                ))
             }
             "embedding_dense_backward.default" => {
                 let grad_info = self.tensor_info_from_arg(nd, 0)?;
@@ -221,25 +215,24 @@ impl TraceBuilder {
                 let batch_size = grad_shape[..grad_shape.len() - 1].iter().product::<i64>() as u64;
                 let dim = grad_shape[grad_shape.len() - 1];
                 let num_embeddings = nd.args.get(2).unwrap().int_value() as u64;
-                Ok(Some(GraphNode::Kernel {
-                    kernel: Kernel::embedding_bwd(
+                Ok(Some(
+                    Kernel::embedding_bwd(
                         nd.name.clone(),
                         batch_size,
                         num_embeddings as _,
                         dim as _,
-                    ),
-                    time_us: 1,
-                }))
+                    )
+                    .into(),
+                ))
             }
             "_fused_adamw_.default" => {
                 let params = nd.args[0].sequence_value();
                 let grads = nd.args[1].sequence_value();
                 let param_bytes = self.calculate_bytes_for_node_refs(&params.elements)?;
                 let grad_bytes = self.calculate_bytes_for_node_refs(&grads.elements)?;
-                Ok(Some(GraphNode::Kernel {
-                    kernel: Kernel::adamw(nd.name.clone(), param_bytes, grad_bytes),
-                    time_us: 1,
-                }))
+                Ok(Some(
+                    Kernel::adamw(nd.name.clone(), param_bytes, grad_bytes).into(),
+                ))
             }
             _ => Ok(None),
         }
@@ -249,7 +242,7 @@ impl TraceBuilder {
     // fn handle_conv_ops(&self, nd: &NodeData) -> Result<Option<GraphNode>> { ... }
     // fn handle_linear_ops(&self, nd: &NodeData) -> Result<Option<GraphNode>> { ... }
 
-    pub fn build_compute_graph(&mut self) -> Result<ComputeGraph> {
+    pub fn build_compute_graph(mut self) -> Result<(ParallelConfig, ComputeGraph)> {
         let (mut sg, start) = Subgraph::new(1);
 
         let mut inputs = Vec::new();
@@ -259,7 +252,6 @@ impl TraceBuilder {
         let buffers = &self.trace_result.graph_module.buffers;
 
         for nd in &self.trace_result.graph_module.graph.nodes {
-            println!("Processing node '{}'", nd.name);
             // We need a mutable copy since we pull buffer info from graph.buffers for get_attr nodes
             let mut nd_to_insert = nd.clone();
             // By default insert an 'other' node
@@ -290,13 +282,16 @@ impl TraceBuilder {
             self.processed.insert(nd.name.clone(), nd_to_insert);
             curr_node = sg.add_node([&curr_node], nd.name.clone(), new_node);
         }
-        println!("Unknown call functions:");
-        for unk in unknowns.iter().sorted() {
-            println!("{}", unk);
-        }
-        //trace.graph_module.as
+        //println!("Unknown call functions:");
+        //for unk in unknowns.iter().sorted() {
+        //    println!("{}", unk);
+        //}
+        sg.finish(&[curr_node]);
 
-        Ok(ComputeGraph::new(vec![sg]))
+        Ok((
+            self.trace_result.parallel_dims.unwrap(),
+            ComputeGraph::new(vec![sg]),
+        ))
     }
 }
 
@@ -308,7 +303,7 @@ mod test {
     fn test_build_compute_graph() {
         let file = File::open("traces/ws8cp2dp2tp2pp1.pb").unwrap();
         let mut reader = BufReader::new(file);
-        let compute_graph = TraceBuilder::parse(&mut reader)
+        let _compute_graph = TraceBuilder::parse(&mut reader)
             .unwrap()
             .build_compute_graph()
             .unwrap();

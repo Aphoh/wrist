@@ -102,6 +102,8 @@ def visualize_graph(trace_result: pb.TraceResult):
             ranks = sorted(node.collective_meta.group_ranks)
             n = len(node.collective_meta.group_ranks)
             stride = ranks[1] - ranks[0] if n > 1 else 0
+            for r in range(1, n):
+                assert ranks[r] - ranks[r-1] == stride, f"Ranks are not evenly spaced, {ranks}"
             metadata.append(f"grp={node.collective_meta.group_desc}({size_str},{n}@{stride})")
             
         if metadata:

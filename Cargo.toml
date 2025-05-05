@@ -14,7 +14,9 @@ thiserror = "2.0"
 petgraph = "0.8.1"
 anyhow = "1.0.98"
 protobuf = "3.7.2"
+glob = "0.3.2"
 clap = { version = "4.0", features = ["derive"] }
+histo = "1"
 
 
 [build-dependencies]
@@ -26,5 +28,5 @@ name = "trace_parser"
 path = "src/bin/trace_parser.rs"
 
 [[bin]]
-name = "simulate"
-path = "src/bin/simulate.rs"
+name = "sim_fx"
+path = "src/bin/sim_fx.rs"

@@ -44,7 +44,7 @@ pub enum KernelOp {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, PartialOrd, Ord, Eq)]
 pub struct Kernel {
     pub name: String,
     pub op: KernelOp,
@@ -153,16 +153,16 @@ impl Kernel {
     }
 }
 
-pub trait KernelProfile {
-    fn compute_us<I: AsRef<KernelOp>>(&self, kernel: I) -> u64;
+pub trait KernelProfile: Sync {
+    fn compute_us(&self, kernel: &KernelOp) -> Option<u64>;
 }
 
 pub struct NaiveKernelProfile();
 pub const FLOPS_PER_US: f64 = 0.5 * 312e6;
 // TODO: actually use data
 impl KernelProfile for NaiveKernelProfile {
-    fn compute_us<K: AsRef<KernelOp>>(&self, kernel: K) -> u64 {
-        let flops = match *kernel.as_ref() {
+    fn compute_us(&self, kernel: &KernelOp) -> Option<u64> {
+        let flops = match kernel {
             KernelOp::MatMul { m, n, k } => 2 * m * n * k,
             KernelOp::FlashAttentionFwd {
                 b,
@@ -170,7 +170,7 @@ impl KernelProfile for NaiveKernelProfile {
                 query_heads,
                 head_dim,
                 ..
-            } => flash_attention_forward_flops(b, s, query_heads, head_dim),
+            } => flash_attention_forward_flops(*b, *s, *query_heads, *head_dim),
             KernelOp::LayerNorm { n, hidden } => 2 * n * hidden,
             KernelOp::FlashAttentionBwd {
                 b,
@@ -178,7 +178,7 @@ impl KernelProfile for NaiveKernelProfile {
                 query_heads,
                 head_dim,
                 ..
-            } => 2 * flash_attention_forward_flops(b, s, query_heads, head_dim),
+            } => 2 * flash_attention_forward_flops(*b, *s, *query_heads, *head_dim),
             KernelOp::EmbeddingFwd {
                 batch,
                 num_embeddings,
@@ -194,7 +194,7 @@ impl KernelProfile for NaiveKernelProfile {
                 grad_bytes,
             } => 2 * param_bytes + grad_bytes,
         };
-        return (flops as f64 / FLOPS_PER_US) as u64;
+        return Some((flops as f64 / FLOPS_PER_US) as u64);
     }
 }
 
@@ -235,12 +235,9 @@ impl DenseLookupKernelProfile {
 }
 
 impl KernelProfile for DenseLookupKernelProfile {
-    fn compute_us<K: AsRef<KernelOp>>(&self, kernel: K) -> u64 {
-        let k = kernel.as_ref();
-        self.records
-            .get(&k)
-            .map(|c| *c)
-            .unwrap_or_else(|| NaiveKernelProfile().compute_us(k))
+    fn compute_us(&self, kernel: &KernelOp) -> Option<u64> {
+        let k = kernel;
+        self.records.get(&k).copied()
     }
 }
 
@@ -258,4 +255,29 @@ fn flash_attention_forward_flops(
         2 * batch_size * query_heads * sequence_length * sequence_length * head_dim;
 
     return total_flops_qk + total_flops_av;
+}
+
+/// Enum wrapper for KernelProfile implementations to enable static dispatch
+pub enum KernelProfileImpl {
+    Dense(DenseLookupKernelProfile),
+    Naive(NaiveKernelProfile),
+}
+
+impl KernelProfileImpl {
+    /// Create a KernelProfileImpl from an optional path or use default NaiveKernelProfile
+    pub fn from_file_or_default(path: Option<impl AsRef<Path>>) -> Self {
+        match path {
+            Some(path) => KernelProfileImpl::Dense(DenseLookupKernelProfile::from_file(path)),
+            None => KernelProfileImpl::Naive(NaiveKernelProfile()),
+        }
+    }
+}
+
+impl KernelProfile for KernelProfileImpl {
+    fn compute_us(&self, kernel: &KernelOp) -> Option<u64> {
+        match self {
+            KernelProfileImpl::Dense(p) => p.compute_us(kernel),
+            KernelProfileImpl::Naive(p) => p.compute_us(kernel),
+        }
+    }
 }

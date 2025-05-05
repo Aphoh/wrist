@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use petgraph::{graph::NodeIndex as PetNodeIndex, Directed, Direction, Graph};
 
@@ -10,34 +10,33 @@ use crate::{
 pub mod fx;
 
 pub enum GraphNode {
-    Kernel {
-        kernel: Kernel,
-        time_us: u64,
-    },
-    Collective {
-        collective: Collective,
-        time_us: u64,
-    },
+    Kernel(Kernel),
+    Collective(Collective),
     Other(String),
     Start,
     End,
 }
 
-impl GraphNode {
-    pub fn time_us(&self) -> u64 {
-        match self {
-            GraphNode::Kernel { time_us, .. } => *time_us,
-            GraphNode::Collective { time_us, .. } => *time_us,
-            GraphNode::Other(_) => 0,
-            GraphNode::Start => 0,
-            GraphNode::End => 0,
-        }
+impl From<Kernel> for GraphNode {
+    fn from(kernel: Kernel) -> Self {
+        GraphNode::Kernel(kernel)
     }
-    pub fn set_time_us(&mut self, new_time_us: u64) {
+}
+
+impl From<Collective> for GraphNode {
+    fn from(collective: Collective) -> Self {
+        GraphNode::Collective(collective)
+    }
+}
+
+impl GraphNode {
+    pub fn time_us<N: Network, K: KernelProfile>(&self, network: &N, kp: &K) -> Option<u64> {
         match self {
-            GraphNode::Kernel { time_us, .. } => *time_us = new_time_us,
-            GraphNode::Collective { time_us, .. } => *time_us = new_time_us,
-            _ => {}
+            GraphNode::Kernel(k) => kp.compute_us(&k.op),
+            GraphNode::Collective(c) => network.measure(c),
+            GraphNode::Other(_) => Some(0),
+            GraphNode::Start => Some(0),
+            GraphNode::End => Some(0),
         }
     }
 }
@@ -45,18 +44,10 @@ impl GraphNode {
 impl std::fmt::Debug for GraphNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GraphNode::Kernel { kernel, time_us } => f
-                .debug_struct("Kernel")
-                .field("kernel", kernel)
-                .field("time_us", time_us)
-                .finish(),
-            GraphNode::Collective {
-                collective,
-                time_us,
-            } => f
+            GraphNode::Kernel(kernel) => f.debug_struct("Kernel").field("kernel", kernel).finish(),
+            GraphNode::Collective(collective) => f
                 .debug_struct("Collective")
                 .field("collective", collective)
-                .field("time_us", time_us)
                 .finish(),
             GraphNode::Other(name) => write!(f, "Other({})", name),
             GraphNode::Start => write!(f, "Start"),
@@ -76,7 +67,6 @@ pub struct DataItem {
 pub struct Subgraph {
     scan: u64,
     graph: Graph<GraphNode, String, Directed>,
-    collective_ids: Vec<NodeId>,
     start_id: NodeId,
     end_id: NodeId,
 }
@@ -92,7 +82,6 @@ impl Subgraph {
                 graph,
                 start_id,
                 end_id,
-                collective_ids: Vec::new(),
             },
             DataItem {
                 name: "start".to_string(),
@@ -105,52 +94,14 @@ impl Subgraph {
         self.graph.add_edge(from, to, edge.to_string());
     }
 
-    pub fn kernel<'a>(
-        &mut self,
-        from: impl AsRef<[&'a DataItem]>,
-        dest_name: impl ToString,
-        kernel: Kernel,
-        prof: &impl KernelProfile,
-    ) -> DataItem {
-        let time_us = prof.compute_us(&kernel);
-        self.add_node(
-            from,
-            dest_name,
-            GraphNode::Kernel {
-                kernel: kernel.clone(),
-                time_us,
-            },
-        )
-    }
-
-    pub fn collective<'a>(
-        &mut self,
-        from: impl AsRef<[&'a DataItem]>,
-        dest_name: impl ToString,
-        collective: Collective,
-        prof: &impl Network,
-    ) -> DataItem {
-        let time_us = prof.measure_one(&collective);
-        self.add_node(
-            from,
-            dest_name,
-            GraphNode::Collective {
-                collective,
-                time_us,
-            },
-        )
-    }
-
     fn add_node<'a>(
         &mut self,
         from: impl AsRef<[&'a DataItem]>,
         dest_name: impl ToString,
-        node: GraphNode,
+        elem: impl Into<GraphNode>,
     ) -> DataItem {
+        let node = elem.into();
         let node_id = self.graph.add_node(node);
-        if let GraphNode::Collective { .. } = &self.graph[node_id] {
-            self.collective_ids.push(node_id);
-        }
         for from_di in from.as_ref() {
             self.graph
                 .add_edge(from_di.node_id, node_id, from_di.name.clone());
@@ -158,15 +109,6 @@ impl Subgraph {
         DataItem {
             name: dest_name.to_string(),
             node_id,
-        }
-    }
-
-    pub fn remeasure_network(&mut self, network: &impl Network) {
-        for node_id in self.collective_ids.iter() {
-            if let GraphNode::Collective { collective, .. } = &mut self.graph[*node_id] {
-                let time_us = network.measure_one(collective);
-                self.graph[*node_id].set_time_us(time_us)
-            }
         }
     }
 
@@ -205,6 +147,24 @@ impl Subgraph {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct MissingProfiles {
+    pub missing_kernels: BTreeSet<Kernel>,
+    pub missing_collectives: BTreeSet<Collective>,
+}
+
+impl MissingProfiles {
+    pub fn is_empty(&self) -> bool {
+        self.missing_kernels.is_empty() && self.missing_collectives.is_empty()
+    }
+    pub fn merge(&mut self, other: MissingProfiles) {
+        self.missing_kernels
+            .extend(other.missing_kernels.into_iter());
+        self.missing_collectives
+            .extend(other.missing_collectives.into_iter());
+    }
+}
+
 pub struct ComputeGraph {
     pub subgraphs: Vec<Subgraph>,
 }
@@ -214,8 +174,10 @@ impl ComputeGraph {
         ComputeGraph { subgraphs }
     }
 
-    pub fn time(&self) -> u64 {
+    pub fn time<N: Network, K: KernelProfile>(&self, net: &N, kernel: &K) -> Result<u64, MissingProfiles> {
         let mut total_time = 0;
+
+        let mut missing_profiles = MissingProfiles::default();
         for subgraph in &self.subgraphs {
             if !subgraph.is_finished() {
                 panic!("Subgraph not finished"); // TODO: better error handling
@@ -233,11 +195,27 @@ impl ComputeGraph {
                     // Get longest time from neighbor
                     input_time = max_time[&neighbor].max(input_time);
                 }
-                max_time.insert(node_id, input_time + node.time_us());
+                let time_us = node.time_us(net, kernel).unwrap_or_else(|| {
+                    match node {
+                        GraphNode::Kernel(k) => missing_profiles.missing_kernels.insert(k.clone()),
+                        GraphNode::Collective(c) => {
+                            missing_profiles.missing_collectives.insert(c.clone())
+                        }
+                        _ => true,
+                    };
+                    0
+                });
+                max_time.insert(node_id, input_time + time_us);
             }
             total_time +=
                 max_time.get(&subgraph.end_id).expect("Must hit end node") * subgraph.scan;
         }
-        total_time
+        if missing_profiles.missing_kernels.is_empty()
+            && missing_profiles.missing_collectives.is_empty()
+        {
+            Ok(total_time)
+        } else {
+            Err(missing_profiles)
+        }
     }
 }
