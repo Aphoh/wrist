@@ -10,7 +10,6 @@ use crate::{
     network::{Collective, CollectiveType},
 };
 use anyhow::{anyhow, Context, Result};
-use itertools::Itertools;
 use protobuf::{Message, MessageField};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -295,6 +294,7 @@ impl TraceBuilder {
     }
 }
 
+#[cfg(test)]
 mod test {
     use super::TraceBuilder;
     use std::fs::File;

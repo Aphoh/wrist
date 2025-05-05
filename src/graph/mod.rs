@@ -174,7 +174,11 @@ impl ComputeGraph {
         ComputeGraph { subgraphs }
     }
 
-    pub fn time<N: Network, K: KernelProfile>(&self, net: &N, kernel: &K) -> Result<u64, MissingProfiles> {
+    pub fn time<N: Network, K: KernelProfile>(
+        &self,
+        net: &N,
+        kernel: &K,
+    ) -> Result<u64, MissingProfiles> {
         let mut total_time = 0;
 
         let mut missing_profiles = MissingProfiles::default();

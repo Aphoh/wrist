@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<TraceBuilder>>>()?;
 
     let mut hist = histo::Histogram::with_buckets(10);
-    
+
     // Collect all results into a Vec
     let all_results: Vec<(ParallelConfig, u64, Option<MissingProfiles>)> = graphs
         .into_par_iter()
@@ -88,21 +88,22 @@ fn main() -> Result<()> {
             hist.add(*time);
         }
     }
-    
+
     // Print histogram
     println!("Runtime distribution:\n{}", hist);
 
     // Find the best configuration
-    let result = all_results
-        .into_iter()
-        .reduce(|(pc1, time1, missing1), (pc2, time2, missing2)| {
-            let missing = merge_missing_profiles(missing1, missing2);
-            if time1 < time2 {
-                (pc1, time1, missing)
-            } else {
-                (pc2, time2, missing)
-            }
-        });
+    let result =
+        all_results
+            .into_iter()
+            .reduce(|(pc1, time1, missing1), (pc2, time2, missing2)| {
+                let missing = merge_missing_profiles(missing1, missing2);
+                if time1 < time2 {
+                    (pc1, time1, missing)
+                } else {
+                    (pc2, time2, missing)
+                }
+            });
 
     if let Some((config, time, missing)) = result {
         if let Some(missing) = missing {
