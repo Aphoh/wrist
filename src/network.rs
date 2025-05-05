@@ -26,44 +26,9 @@ pub struct Collective {
     pub group_stride: u32,
     pub piece_bytes: u64,
     pub group_size: u32,
+    pub is_async: bool,
 }
 
-impl Collective {
-    pub fn all_gather(name: String, piece_bytes: u64, group_size: u32, stride: u32) -> Self {
-        Self {
-            name,
-            ctype: CollectiveType::AllGather,
-            group_stride: stride,
-            piece_bytes,
-            group_size,
-        }
-    }
-
-    pub fn all_reduce(name: String, piece_bytes: u64, tier: u32, stride: u32) -> Self {
-        Self {
-            name,
-            ctype: CollectiveType::AllReduce,
-            group_stride: stride,
-            piece_bytes,
-            group_size: tier,
-        }
-    }
-
-    pub fn reduce_scatter(
-        name: String,
-        piece_bytes: u64,
-        group_size: u32,
-        group_stride: u32,
-    ) -> Collective {
-        Self {
-            name,
-            ctype: CollectiveType::ReduceScatter,
-            group_stride,
-            piece_bytes,
-            group_size,
-        }
-    }
-}
 pub trait Network: Sync {
     fn measure(&self, collective: &Collective) -> Option<u64>;
 }

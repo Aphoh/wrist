@@ -12,7 +12,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use protobuf::{Message, MessageField};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::Read,
 };
 use torch_titan::{NodeData, NodeValue, ParallelConfig, TensorInfo, TraceResult};
@@ -79,18 +79,34 @@ impl TraceBuilder {
             return Ok(node);
         }
 
+        if nd.target == "wait_tensor.default" {
+            return Ok(GraphNode::WaitCollective(
+                nd.args[0].node_ref_value().to_string(),
+            ));
+        }
+
         // Default case - unknown operation
         Ok(GraphNode::Other(nd.target.clone()))
     }
 
     fn handle_collective_ops(&self, nd: &NodeData) -> Result<Option<GraphNode>> {
-        let ctype = match nd.target.as_str() {
+        let (ctype, is_async) = match nd.target.as_str() {
             "all_gather_into_tensor.default" | "_allgather_base_.default" => {
-                CollectiveType::AllGather
+                let is_async = nd.args.len() < 4 || nd.args[3].bool_value();
+                (CollectiveType::AllGather, is_async)
             }
-            "all_reduce.default" => CollectiveType::AllReduce,
-            "reduce_scatter_tensor.default" => CollectiveType::ReduceScatter,
-            "all_to_all_single.default" => CollectiveType::AllToAllSingle,
+            "all_reduce.default" => (
+                CollectiveType::AllReduce,
+                nd.args.len() < 4 || nd.args[3].bool_value(),
+            ),
+            "reduce_scatter_tensor.default" | "_reduce_scatter_base_.default" => {
+                let is_async = nd.args.len() < 5 || nd.args[4].bool_value();
+                (CollectiveType::ReduceScatter, is_async)
+            }
+            "all_to_all_single.default" => (
+                CollectiveType::AllToAllSingle,
+                nd.args.len() < 5 || nd.args[4].bool_value(),
+            ),
             _ => return Ok(None),
         };
         if !nd.collective_meta.is_some() {
@@ -114,6 +130,7 @@ impl TraceBuilder {
                 group_stride,
                 piece_bytes,
                 group_size,
+                is_async,
             }
             .into(),
         ));
@@ -244,11 +261,14 @@ impl TraceBuilder {
     pub fn build_compute_graph(mut self) -> Result<(ParallelConfig, ComputeGraph)> {
         let (mut sg, start) = Subgraph::new(1);
 
+        // TODO: estimate memory using inputs and pending items
         let mut inputs = Vec::new();
         let mut curr_node = start.clone();
 
         let mut unknowns = BTreeSet::new();
+        let mut pending_collectives = BTreeSet::new();
         let buffers = &self.trace_result.graph_module.buffers;
+        let mut node_ref_to_graph_index = HashMap::new();
 
         for nd in &self.trace_result.graph_module.graph.nodes {
             // We need a mutable copy since we pull buffer info from graph.buffers for get_attr nodes
@@ -278,13 +298,49 @@ impl TraceBuilder {
                     println!("Unknown op {} in node {}", nd.op, nd.name);
                 }
             }
+            // Insert whatever node we got from our match
             self.processed.insert(nd.name.clone(), nd_to_insert);
-            curr_node = sg.add_node([&curr_node], nd.name.clone(), new_node);
+            if let GraphNode::Collective(Collective { is_async, .. }) = &new_node {
+                if *is_async {
+                    // If we got an async collective, we shouldn't have the next node wait for it by default...
+                    let node_data = sg.add_node(&[&curr_node], nd.name.clone(), new_node);
+                    // Keep track of the collective ref for later
+                    node_ref_to_graph_index.insert(nd.name.clone(), node_data.clone());
+                    pending_collectives.insert(nd.name.clone());
+                    //TODO: with CUDA_DEVICE_MAX_CONNECTIONS=1 we should check whether the collective
+                    // is over nvlink or over network, and update the graph accordingly, as this might depend on other collectives as well
+                    // For now let's just assume they're all independent/waited correctly in torch.
+                }
+            } else if let GraphNode::WaitCollective(coll) = &new_node {
+                // We're waiting for a collective to finish here
+                // Get the graph reference for the we're waiting for
+                let ref_node_id = node_ref_to_graph_index.get(coll).ok_or_else(|| {
+                    anyhow!("wait '{}' called before collective '{}'", nd.name, coll,)
+                })?;
+                // Remove the collective from the pending list
+                assert!(pending_collectives.remove(coll));
+                // This operation comes after the previous operation and waits the collective
+                curr_node = sg.add_node(&[&curr_node, &ref_node_id], nd.name.clone(), new_node);
+                node_ref_to_graph_index.insert(nd.name.clone(), curr_node.clone());
+            } else {
+                curr_node = sg.add_node([&curr_node], nd.name.clone(), new_node);
+                node_ref_to_graph_index.insert(nd.name.clone(), curr_node.clone());
+            }
         }
         //println!("Unknown call functions:");
         //for unk in unknowns.iter().sorted() {
         //    println!("{}", unk);
         //}
+        if !pending_collectives.is_empty() {
+            return Err(anyhow!(
+                "Pending collectives found {}",
+                pending_collectives
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         sg.finish(&[curr_node]);
 
         Ok((

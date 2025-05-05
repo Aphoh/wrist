@@ -12,6 +12,7 @@ pub mod fx;
 pub enum GraphNode {
     Kernel(Kernel),
     Collective(Collective),
+    WaitCollective(String),
     Other(String),
     Start,
     End,
@@ -34,6 +35,7 @@ impl GraphNode {
         match self {
             GraphNode::Kernel(k) => kp.compute_us(&k.op),
             GraphNode::Collective(c) => network.measure(c),
+            GraphNode::WaitCollective(_) => Some(0),
             GraphNode::Other(_) => Some(0),
             GraphNode::Start => Some(0),
             GraphNode::End => Some(0),
@@ -49,6 +51,7 @@ impl std::fmt::Debug for GraphNode {
                 .debug_struct("Collective")
                 .field("collective", collective)
                 .finish(),
+            GraphNode::WaitCollective(name) => write!(f, "WaitCollective({})", name),
             GraphNode::Other(name) => write!(f, "Other({})", name),
             GraphNode::Start => write!(f, "Start"),
             GraphNode::End => write!(f, "End"),
@@ -64,9 +67,15 @@ pub struct DataItem {
     pub node_id: NodeId,
 }
 
+impl From<&DataItem> for NodeId {
+    fn from(data_item: &DataItem) -> Self {
+        data_item.node_id
+    }
+}
+
 pub struct Subgraph {
     scan: u64,
-    graph: Graph<GraphNode, String, Directed>,
+    graph: Graph<GraphNode, (), Directed>,
     start_id: NodeId,
     end_id: NodeId,
 }
@@ -90,21 +99,19 @@ impl Subgraph {
         )
     }
 
-    pub fn connect(&mut self, edge: impl ToString, from: NodeId, to: NodeId) {
-        self.graph.add_edge(from, to, edge.to_string());
-    }
-
-    fn add_node<'a>(
+    fn add_node<'a, T: 'a>(
         &mut self,
-        from: impl AsRef<[&'a DataItem]>,
+        from: impl AsRef<[&'a T]>,
         dest_name: impl ToString,
         elem: impl Into<GraphNode>,
-    ) -> DataItem {
+    ) -> DataItem
+    where
+        NodeId: From<&'a T>,
+    {
         let node = elem.into();
         let node_id = self.graph.add_node(node);
-        for from_di in from.as_ref() {
-            self.graph
-                .add_edge(from_di.node_id, node_id, from_di.name.clone());
+        for &from_di in from.as_ref() {
+            self.graph.add_edge(from_di.into(), node_id, ());
         }
         DataItem {
             name: dest_name.to_string(),
@@ -134,8 +141,7 @@ impl Subgraph {
         }
 
         for node in outputs.as_ref() {
-            self.graph
-                .add_edge(node.node_id, self.end_id, node.name.clone());
+            self.graph.add_edge(node.node_id, self.end_id, ());
         }
     }
 
