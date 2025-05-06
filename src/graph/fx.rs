@@ -27,6 +27,23 @@ fn filter_node_refs<'a>(nvs: impl Iterator<Item = &'a NodeValue>) -> impl Iterat
         .map(|t| t.node_ref_value())
 }
 
+fn memory_bytes_for_tinfo(tinfo: &TensorInfo) -> u64 {
+    let n_params = tinfo.shape.dims.iter().product::<i64>() * 2;
+    let bytes_per_param = match tinfo.dtype.as_str() {
+        "torch.float32" => 4,
+        "torch.float16" => 2,
+        "torch.bfloat16" => 2,
+        "torch.int32" => 4,
+        "torch.int64" => 8,
+        "torch.complex64" => 8,
+        _ => {
+            println!("Unknown dtype {}", tinfo.dtype);
+            2
+        }
+    };
+    (n_params * bytes_per_param) as u64
+}
+
 impl TraceBuilder {
     pub fn parallel_dims(&self) -> &ParallelConfig {
         &self.trace_result.parallel_dims.as_ref().unwrap()
@@ -180,19 +197,8 @@ impl TraceBuilder {
     fn calculate_bytes_for_node_refs<'a>(&self, node_refs: impl AsRef<[NodeValue]>) -> Result<u64> {
         filter_node_refs(node_refs.as_ref().iter())
             .map(|t| {
-                self.tensor_info_from_ref(t).map(|t| {
-                    let n_params = t.shape.dims.iter().product::<i64>() * 2;
-                    let bytes_per_param = match t.dtype.as_str() {
-                        "torch.float32" => 4,
-                        "torch.float16" => 2,
-                        "torch.bfloat16" => 2,
-                        _ => {
-                            println!("Unknown dtype {}", t.dtype);
-                            2
-                        }
-                    };
-                    (n_params * bytes_per_param) as u64
-                })
+                self.tensor_info_from_ref(t)
+                    .map(|info| memory_bytes_for_tinfo(&info))
             })
             .sum::<Result<u64>>()
     }
@@ -306,10 +312,20 @@ impl TraceBuilder {
                     let node_data = sg.add_node(&[&curr_node], nd.name.clone(), new_node);
                     // Keep track of the collective ref for later
                     node_ref_to_graph_index.insert(nd.name.clone(), node_data.clone());
+                    if !pending_collectives.is_empty() {
+                        //TODO: with CUDA_DEVICE_MAX_CONNECTIONS=1 we should check whether the collective
+                        // is over nvlink or over network, and update the graph accordingly, as this might depend on other collectives as well
+                        // For now let's just assert two don't overlap
+                        return Err(anyhow!(
+                            "Pending collectives found {}",
+                            pending_collectives
+                                .iter()
+                                .map(|id: &String| id.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
                     pending_collectives.insert(nd.name.clone());
-                    //TODO: with CUDA_DEVICE_MAX_CONNECTIONS=1 we should check whether the collective
-                    // is over nvlink or over network, and update the graph accordingly, as this might depend on other collectives as well
-                    // For now let's just assume they're all independent/waited correctly in torch.
                 }
             } else if let GraphNode::WaitCollective(coll) = &new_node {
                 // We're waiting for a collective to finish here
@@ -343,9 +359,16 @@ impl TraceBuilder {
         }
         sg.finish(&[curr_node]);
 
+        let parameter_memory = buffers
+            .values()
+            .map(|info| memory_bytes_for_tinfo(&info))
+            .sum::<u64>();
+        println!("Parameter memory: {} bytes", parameter_memory);
+        // TODO: estimate activation memory as well
+
         Ok((
             self.trace_result.parallel_dims.unwrap(),
-            ComputeGraph::new(vec![sg]),
+            ComputeGraph::new(vec![sg], parameter_memory as u64),
         ))
     }
 }

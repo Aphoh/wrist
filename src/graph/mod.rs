@@ -173,11 +173,16 @@ impl MissingProfiles {
 
 pub struct ComputeGraph {
     pub subgraphs: Vec<Subgraph>,
+    pub peak_memory: u64,
 }
 
 impl ComputeGraph {
-    pub fn new(subgraphs: Vec<Subgraph>) -> Self {
-        ComputeGraph { subgraphs }
+    pub fn new(subgraphs: Vec<Subgraph>, peak_memory: u64) -> Self {
+        ComputeGraph { subgraphs, peak_memory }
+    }
+
+    pub fn peak_memory(&self) -> u64 {
+        self.peak_memory
     }
 
     pub fn time<N: Network, K: KernelProfile>(

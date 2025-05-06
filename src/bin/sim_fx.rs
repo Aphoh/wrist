@@ -1,4 +1,4 @@
-use std::{fs, io::BufReader, path::PathBuf};
+use std::{fmt::Display, fs, io::BufReader, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
@@ -40,6 +40,13 @@ fn merge_missing_profiles(
     }
 }
 
+fn pc_to_string(pc: &ParallelConfig) -> String {
+    format!(
+        "PC{{ dp_shard: {}, cp: {}, tp: {}, pp: {} }}",
+        pc.dp_shard, pc.cp, pc.tp, pc.pp
+    )
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -59,6 +66,7 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<TraceBuilder>>>()?;
 
     let mut hist = histo::Histogram::with_buckets(10);
+    let leaf_memory = (args.leaf_memory_gb * (1 << 30) as f32) as u64;
 
     // Collect all results into a Vec
     let all_results: Vec<(ParallelConfig, u64, Option<MissingProfiles>)> = graphs
@@ -67,6 +75,14 @@ fn main() -> Result<()> {
             let dims = trace.parallel_dims().clone();
             match trace.build_compute_graph() {
                 Ok((pc, graph)) => {
+                    if graph.peak_memory() > leaf_memory {
+                        println!(
+                            "Skipping configuration {} with peak memory {} GB",
+                            pc_to_string(&pc),
+                            graph.peak_memory() / (1 << 30)
+                        );
+                        return vec![];
+                    }
                     let time_us = graph.time(&net, &kernel_profile);
                     let res = match time_us {
                         Ok(time) => vec![(pc, time, None)],
