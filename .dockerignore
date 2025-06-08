@@ -1,0 +1,6 @@
+.venv/
+.vscode/
+target/
+traces/
+csvs/
+viz/

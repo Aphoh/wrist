@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sample-model"
+version = "0.1.0"
+description = "PyTorch Transformer with FSDP and Async Tensor Parallelism"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+dependencies = [
+    "torch==2.8.0.dev20250606+cpu; platform_system == 'Darwin'",
+    "torch==2.8.0.dev20250606+cpu; platform_system != 'Darwin'",
+    "protobuf>=3.20.0",
+    "numpy>=1",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "platform_system == 'Darwin'" },
+    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "platform_system == 'Darwin'" },
+    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
+]
+
+
+[tool.hatchling.build.targets.wheel]
+packages = ["src/sample_model"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true
