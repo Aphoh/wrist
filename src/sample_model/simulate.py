@@ -278,7 +278,7 @@ async def main() -> None:
     vocab_size = 50000
     d_model = 512
     n_heads = 8
-    n_layers = 1
+    n_layers = 8
     seq_len = 512
     
     # Calculate batch size (4M tokens total)
@@ -318,6 +318,8 @@ async def main() -> None:
             f.write(out_bytes)
         # Write readable graph code
         with open(f"traces/{name}.py", "w") as f:
+            f.write("# Generated code for parallel config: " + name + "\n")
+            f.write("import torch\n")
             f.write(code)
         return f"Config {i}", timing
 

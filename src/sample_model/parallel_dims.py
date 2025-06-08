@@ -2,9 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
-from torch.distributed._composable.replicate import replicate
 from torch import nn
-import torch
 
 __all__ = ["ParallelDims"]
 
@@ -109,5 +107,5 @@ class ParallelDims:
 def apply_ddp(
     model: nn.Module,
     dp_mesh: DeviceMesh,
-):
-    replicate(model, device_mesh=dp_mesh, bucket_cap_mb=100)
+) -> nn.Module:
+    return nn.parallel.DistributedDataParallel(model, device_mesh=dp_mesh, init_sync=False)

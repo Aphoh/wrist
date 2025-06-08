@@ -147,12 +147,13 @@ def setup_fsdp_model(model: AsyncTransformer, parallel_dims: ParallelDims, devic
         )
     }
     if parallel_dims.dp_enabled:
+        dim_names = []
         if parallel_dims.dp_replicate_enabled:
-            dp_mesh_dim_names = ("dp_replicate", "dp_shard")
-        else:
-            dp_mesh_dim_names = ("dp_shard",)
+            dim_names.append("dp_replicate")
+        if parallel_dims.dp_shard_enabled:
+            dim_names.append("dp_shard")
 
-        dp_mesh = device_mesh[dp_mesh_dim_names]
+        dp_mesh = device_mesh[tuple(dim_names)]
 
         if parallel_dims.dp_shard_enabled:
             for layer in model.layers:
