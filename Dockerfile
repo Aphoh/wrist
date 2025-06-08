@@ -1,4 +1,4 @@
-FROM rust:1.87-slim-bookworm AS builder
+FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 

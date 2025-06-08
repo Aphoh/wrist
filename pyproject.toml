@@ -9,27 +9,21 @@ description = "PyTorch Transformer with FSDP and Async Tensor Parallelism"
 license = {text = "MIT"}
 requires-python = ">=3.12"
 dependencies = [
-    "torch==2.8.0.dev20250606+cpu; platform_system == 'Darwin'",
-    "torch==2.8.0.dev20250606+cpu; platform_system != 'Darwin'",
+    "torch>=2.6",
     "protobuf>=3.20.0",
     "numpy>=1",
 ]
 
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", marker = "platform_system == 'Darwin'" },
-    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
-]
-torchvision = [
-    { index = "pytorch-cpu", marker = "platform_system == 'Darwin'" },
-    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
-]
-
-
 [tool.hatchling.build.targets.wheel]
 packages = ["src/sample_model"]
 
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/nightly/cpu"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/nightly/cu128"
 explicit = true

@@ -1,0 +1,43 @@
+{
+	"name": "Wrist Development Environment",
+	"build": {
+		"dockerfile": "../Dockerfile"
+	},
+	"runArgs": [
+		"--gpus=all"
+	],
+	"workspaceFolder": "/workspace",
+	"mounts": [
+		"source=${localWorkspaceFolder}/src,target=/workspace/src,type=bind",
+		"source=${localWorkspaceFolder}/.devcontainer,target=/workspace/.devcontainer,type=bind",
+		"source=${localWorkspaceFolder}/uv.lock,target=/workspace/uv.lock,type=bind",
+		"source=${localWorkspaceFolder}/pyproject.toml,target=/workspace/pyproject.toml,type=bind"
+	],
+	
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"charliermarsh.ruff",
+				"rust-lang.rust-analyzer"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+				"python.terminal.activateEnvironment": true,
+				"[python]": {
+					"editor.defaultFormatter": "charliermarsh.ruff",
+					"editor.formatOnSave": true,
+					"editor.codeActionsOnSave": {
+						"source.organizeImports": "explicit"
+					}
+				},
+				"ruff.importStrategy": "fromEnvironment"
+			}
+		}
+	},
+
+	"remoteUser": "root",
+	"containerEnv": {
+		"PYTHONPATH": "/workspace/src"
+	}
+}
