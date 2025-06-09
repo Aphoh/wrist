@@ -6,6 +6,7 @@ from torch._C._distributed_c10d import (
     FakeProcessGroup,
     FakeWork,
 )
+import torch.distributed as dist
 
 # Sets up fake collective impls
 from torch.distributed._tools import fake_collectives

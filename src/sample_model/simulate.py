@@ -12,6 +12,7 @@ import torch.fx.experimental.symbolic_shapes
 from torch.optim import Adam
 import asyncio
 
+from sample_model.async_model import create_async_transformer
 from sample_model.parallel_dims import ParallelDims
 
 from . import fx_serialize
@@ -86,7 +87,7 @@ def lists_from_primes_gen(nums: List[int], d: int) -> Iterator[List[int]]:
 
 
 def generate_parallelism_configs(world_size: int) -> Iterator[Dict[str, int]]:
-    search = ["dp_replicate", "dp_shard", "tp"]
+    search = ["dp_shard", "tp"]
     primes = prime_factorize(world_size)
     for assigsn in lists_from_primes_gen(primes, len(search)):
         config = dict(zip(search, assigsn))
@@ -147,29 +148,28 @@ async def trace_model(
     
     device = torch.device("cuda")
     with fake_mode, device:
-        start_model = time.time()
-        tp_mesh = parallel_dims.get_tp_mesh(device_mesh)
-        model = AsyncTransformer(
+        tp_mesh, dp_mesh = None, None
+        if parallel_dims.tp_enabled:
+            tp_mesh = device_mesh['tp']
+        if parallel_dims.dp_shard_enabled:
+            dp_mesh = device_mesh['dp_shard']
+        
+        model, optimizer = create_async_transformer(
             vocab_size=vocab_size,
             d_model=d_model,
             n_heads=n_heads,
             n_layers=n_layers,
-            tp_group=tp_mesh.get_group() if tp_mesh is not None else None, 
+            dp_group=dp_mesh.get_group() if dp_mesh else None,
+            tp_group=tp_mesh.get_group() if tp_mesh else None,
         )
-                                
-        model = setup_fsdp_model(model, parallel_dims, device_mesh=device_mesh)
-        timing["model_init"] = time.time() - start_model
-
-        # Create mock optimizers
-        optimizers = Adam(model.parameters(), lr=0.001)
 
         # Create input tensors
-        adjusted_batch_size = batch_size // (parallel_dims.dp_shard * parallel_dims.dp_replicate)
+        adjusted_batch_size = batch_size // parallel_dims.dp_shard
         inputs = torch.randint(0, vocab_size, (adjusted_batch_size, seq_len), dtype=torch.int32)
         labels = inputs.clone().detach().to(torch.long)
 
         def step():
-            optimizers.zero_grad()
+            optimizer.zero_grad()
 
             # Forward pass
             pred = model(inputs)
@@ -191,8 +191,8 @@ async def trace_model(
                     total_norm += param_norm.item() ** 2
             total_norm = total_norm ** (1. / 2)
             
-            optimizers.step()
-            return optimizers.state_dict()
+            optimizer.step()
+            return optimizer.master_params
 
         start_tracing = time.time()
         make_fx_out = torch.fx.experimental.proxy_tensor.make_fx(
@@ -204,11 +204,11 @@ async def trace_model(
         )()
         
         # Clean up graph
-        for node in make_fx_out.graph.nodes:
-            if node.op == "placeholder" and "val" not in node.meta:
-                make_fx_out.graph.erase_node(node)
-        make_fx_out.graph.eliminate_dead_code()
-        make_fx_out.recompile()
+        #for node in make_fx_out.graph.nodes:
+        #    if node.op == "placeholder" and "val" not in node.meta:
+        #        make_fx_out.graph.erase_node(node)
+        #make_fx_out.graph.eliminate_dead_code()
+        #make_fx_out.recompile()
         timing["tracing"] = time.time() - start_tracing
 
         # Add tensor info to nodes that have fake tensors
@@ -229,7 +229,7 @@ async def trace_model(
 
         # Create ParallelConfig protobuf message
         parallel_config_proto = pb.ParallelConfig(
-            dp_replicate=parallel_dims.dp_replicate,
+            dp_replicate=1,
             dp_shard=parallel_dims.dp_shard,
             cp=1,
             tp=parallel_dims.tp,
@@ -244,7 +244,7 @@ async def trace_model(
             graph_module=graph_module_proto
         )
 
-        return result_proto, make_fx_out.print_readable(), timing
+        return result_proto, make_fx_out.graph.python_code("self", verbose=True, include_stride=True, include_device=True).src, timing
 
 
 async def main() -> None:
@@ -292,7 +292,7 @@ async def main() -> None:
 
     # Generate all configurations in advance to show progress
     configs = list(generate_parallelism_configs(world_size))
-    configs = [c for c in configs if (c["tp"] <= n_heads) and (c["dp_shard"]*c["dp_replicate"] <= batch_size)]
+    configs = [c for c in configs if (c["tp"] <= n_heads) and (c["dp_shard"] <= batch_size)]
     total_configs = len(configs)
 
     # Try all possible parallelism configurations

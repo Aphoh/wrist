@@ -4,8 +4,14 @@ import torch.distributed as dist
 from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
 from torch.nn.functional import scaled_dot_product_attention
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed._functional_collectives import (
+    all_reduce,
+)
 
-from sample_model.parallel_dims import ParallelDims, apply_ddp
+from sample_model.fake import FakeStore
+from sample_model.parallel_dims import ParallelDims
+import logging
+logger = logging.getLogger(__name__)
 
 
 class ColumnParallelLinear(nn.Module):
@@ -14,7 +20,9 @@ class ColumnParallelLinear(nn.Module):
     def __init__(self, in_features, out_features, tp_group):
         super().__init__()
         self.tp_size = dist.get_world_size(tp_group) if tp_group is not None else 1
-        self.weight = nn.Parameter(torch.randn(out_features // self.tp_size, in_features))
+        self.weight = nn.Parameter(
+            torch.randn(out_features // self.tp_size, in_features)
+        )
 
     def forward(self, x):
         # No communication needed for column parallel
@@ -38,9 +46,7 @@ class RowParallelLinear(nn.Module):
 
         if self.tp_group is not None:
             # Async all-reduce across tensor parallel group
-            handle = dist.all_reduce(local_out, async_op=True, group=self.tp_group)
-            # Can overlap other computation here if needed
-            handle.wait()
+            return all_reduce(local_out, 'sum', self.tp_group)
 
         return local_out
 
@@ -87,9 +93,7 @@ class ParallelAttention(nn.Module):
         out_proj = self.out_proj(attn_out)
         if self.tp_group is not None:
             # Async all-reduce across tensor parallel group
-            handle = dist.all_reduce(out_proj, async_op=True, group=self.tp_group)
-            # Can overlap other computation here if needed
-            handle.wait()
+            return all_reduce(out_proj, 'sum', self.tp_group)
         return out_proj
 
 
@@ -138,7 +142,9 @@ class AsyncTransformer(nn.Module):
         return self.output_proj(x)
 
 
-def setup_fsdp_model(model: AsyncTransformer, parallel_dims: ParallelDims, device_mesh: DeviceMesh):
+def setup_fsdp_model(
+    model: AsyncTransformer, parallel_dims: ParallelDims, device_mesh: DeviceMesh
+):
     """Setup FSDP with auto-wrapping and async prefetching"""
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
@@ -146,26 +152,27 @@ def setup_fsdp_model(model: AsyncTransformer, parallel_dims: ParallelDims, devic
             reduce_dtype=torch.float32,
         )
     }
-    if parallel_dims.dp_enabled:
-        dim_names = []
-        if parallel_dims.dp_replicate_enabled:
-            dim_names.append("dp_replicate")
-        if parallel_dims.dp_shard_enabled:
-            dim_names.append("dp_shard")
+    if parallel_dims.dp_shard_enabled:
+        dp_mesh = device_mesh["dp_shard"]
+        for layer in model.layers:
+            fully_shard(layer, mesh=dp_mesh, **fsdp_kwargs)
 
-        dp_mesh = device_mesh[tuple(dim_names)]
+        fully_shard(model, mesh=dp_mesh, **fsdp_kwargs)
 
-        if parallel_dims.dp_shard_enabled:
-            for layer in model.layers:
-                fully_shard(layer, mesh=dp_mesh, **fsdp_kwargs)
+        model._set_unshard_async_op(True)
+        layers = list(model.layers)
+        for i, layer in enumerate(layers):
+            layer._set_unshard_async_op(True)
+            if i < len(layers) - 1:
+                layer.set_modules_to_forward_prefetch([layers[i + 1]])
+            
+            # Set backward prefetching (prefetch previous modules)
+            if i > 0:
+                layer.set_modules_to_backward_prefetch([layers[i - 1]])
 
-            fully_shard(model, mesh=dp_mesh, **fsdp_kwargs)
-        elif parallel_dims.dp_replicate_enabled:
-            apply_ddp(model, dp_mesh=dp_mesh)
     return model
 
 
-@torch.compile(fullgraph=True, dynamic=False)
 def training_step(model, input_ids, labels, optimizer):
     """Compiled training step with forward/backward pass"""
     # Forward pass

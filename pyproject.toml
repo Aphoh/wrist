@@ -9,9 +9,10 @@ description = "PyTorch Transformer with FSDP and Async Tensor Parallelism"
 license = {text = "MIT"}
 requires-python = ">=3.12"
 dependencies = [
-    "torch>=2.6",
+    "torch>=2.7",
     "protobuf>=3.20.0",
     "numpy>=1",
+    "pytorch-triton",
 ]
 
 [tool.hatchling.build.targets.wheel]
@@ -21,9 +22,15 @@ packages = ["src/sample_model"]
 torch = [
   { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]
+pytorch-triton = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+[tool.uv]
+prerelease = "allow"
 
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/nightly/cu128"
 explicit = true
