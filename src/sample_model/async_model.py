@@ -3,12 +3,19 @@ import torch.nn as nn
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.functional import scaled_dot_product_attention
-from typing import Optional, List, Dict, Any
-from contextlib import nullcontext
-from torch.distributed._functional_collectives import all_gather_tensor
+from typing import Optional, List, Dict, Set
+from torch.distributed._functional_collectives import (
+    all_gather_tensor,
+    all_reduce,
+    reduce_scatter_tensor,
+    wait_tensor,
+)
 
 from sample_model.fake import FakeStore
 from sample_model.parallel_dims import ParallelDims
+
+# Hack to disable immediate waiting of functional collectives in tracing
+torch.distributed._functional_collectives._maybe_wrap_tensor = lambda x: x
 
 
 class ParameterBucket:
@@ -46,33 +53,34 @@ class ParameterBucket:
         # Map original parameters to views in the buffer
         self._map_params_to_buffer()
 
-        # Async handles
-        self.allgather_handle = None
-        self.reduce_scatter_handle = None
-
     def _map_params_to_buffer(self):
         """Map original parameters to views in flattened buffer"""
         offset = 0
         for param in self.params:
             numel = param.numel()
             param_view = self.param_data[offset : offset + numel].view(param.shape)
-            #param_view.copy_(param.data)
+            param_view.copy_(param.data)
             param.data = param_view
             offset += numel
 
     def start_param_allgather(self):
         """Start async all-gather of parameter shards"""
         if self.dp_group is not None and self.dp_size > 1:
-            #self.allgather_handle = dist.all_gather_into_tensor(
-            #    self.param_data, self.param_shard, group=self.dp_group, async_op=True
-            #)
-            self.allgather_handle = dist.
+            # Use functional all_gather_tensor - it returns an AsyncCollectiveTensor
+            # that will be waited on when first used
+            self.param_data = all_gather_tensor(
+                self.param_shard, gather_dim=0, group=self.dp_group
+            )
+            setattr(self.param_data, "needs_wait", True)
 
     def finish_param_allgather(self):
         """Wait for parameter all-gather to complete"""
-        if self.allgather_handle is not None:
-            self.allgather_handle.wait()
-            self.allgather_handle = None
+        # With functional collectives, the tensor is automatically synchronized
+        # when first used, but we can explicitly wait if needed
+        if self.dp_group is not None and self.dp_size > 1:
+            # If param_data is an AsyncCollectiveTensor, wait for it
+            self.param_data = wait_tensor(self.param_data)
+            
 
     def start_grad_reduce_scatter(self):
         """Start async reduce-scatter of gradients"""
@@ -86,10 +94,9 @@ class ParameterBucket:
                     grad_data[offset : offset + numel] = param.grad.flatten()
                     offset += numel
 
-            # Start async reduce-scatter
-            grad_shard = torch.zeros_like(self.param_shard)
-            self.reduce_scatter_handle = dist.reduce_scatter_tensor(
-                grad_shard, grad_data, group=self.dp_group, async_op=True
+            # Use functional reduce_scatter_tensor
+            grad_shard = reduce_scatter_tensor(
+                grad_data, reduceOp="sum", scatter_dim=0, group=self.dp_group
             )
             return grad_shard
         else:
@@ -105,9 +112,11 @@ class ParameterBucket:
 
     def finish_grad_reduce_scatter(self, grad_shard: torch.Tensor):
         """Wait for gradient reduce-scatter and apply to parameter shard"""
-        if self.reduce_scatter_handle is not None:
-            self.reduce_scatter_handle.wait()
-            self.reduce_scatter_handle = None
+        # With functional collectives, wait for the tensor if needed
+        if hasattr(grad_shard, 'wait'):
+            grad_shard = grad_shard.wait()
+        else:
+            grad_shard = wait_tensor(grad_shard)
 
         # Update parameter shard gradients
         if not hasattr(self, "param_shard_grad"):
@@ -156,6 +165,9 @@ class AsyncRowParallelLinear(torch.autograd.Function):
     def forward(ctx, input, weight, tp_group):
         ctx.save_for_backward(input, weight)
         ctx.tp_group = tp_group
+        # Ensure input and weight have the same dtype
+        if input.dtype != weight.dtype:
+            input = input.to(weight.dtype)
         # Local matrix multiplication
         output = F.linear(input, weight)
         return output
@@ -165,23 +177,22 @@ class AsyncRowParallelLinear(torch.autograd.Function):
         input, weight = ctx.saved_tensors
         tp_group = ctx.tp_group
 
+        # Ensure grad_output matches weight dtype
+        if grad_output.dtype != weight.dtype:
+            grad_output = grad_output.to(weight.dtype)
+
         # Step 1: Compute input gradient first (this needs to be all-reduced)
         grad_input = grad_output.matmul(weight)
 
-        # Step 2: Start async all-reduce of input gradients
-        all_reduce_handle = None
+        # Step 2: Start async all-reduce of input gradients using functional collective
         if tp_group is not None:
-            all_reduce_handle = dist.all_reduce(
-                grad_input, group=tp_group, async_op=True
-            )
+            grad_input = all_reduce(grad_input, reduceOp="sum", group=tp_group)
 
         # Step 3: While all-reduce is happening, compute weight gradients
         # This computation overlaps with the communication!
         grad_weight = grad_output.transpose(-2, -1).matmul(input)
 
-        # Step 4: Wait for all-reduce to complete
-        if all_reduce_handle is not None:
-            all_reduce_handle.wait()
+        wait_tensor(grad_input)  # Ensure grad_input is ready before returning
 
         return grad_input, grad_weight, None
 
@@ -192,11 +203,18 @@ class AsyncColumnParallelLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, weight):
         ctx.save_for_backward(input, weight)
+        # Ensure input and weight have the same dtype
+        if input.dtype != weight.dtype:
+            input = input.to(weight.dtype)
         return F.linear(input, weight)
 
     @staticmethod
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
+
+        # Ensure grad_output matches weight dtype
+        if grad_output.dtype != weight.dtype:
+            grad_output = grad_output.to(weight.dtype)
 
         # Column parallel: no all-reduce needed, just local gradients
         grad_input = grad_output.matmul(weight)
@@ -381,13 +399,14 @@ class AsyncTransformer(nn.Module):
         )
 
         # Create bucket groups for FSDP parameter management
-        self.bucket_groups = self._create_bucket_groups(dp_group)
+        self.bucket_groups, self.bucketed_param_names = self._create_bucket_groups(dp_group)
 
     def _create_bucket_groups(
         self, dp_group: Optional[dist.ProcessGroup]
-    ) -> List[BucketGroup]:
+    ) -> tuple[List[BucketGroup], Set[str]]:
         """Create parameter buckets following Megatron's pattern"""
         bucket_groups = []
+        bucketed_param_names = set()
 
         # Group parameters by layer (each layer = one bucket for simplicity)
         # In reverse order to match backward pass order
@@ -395,9 +414,13 @@ class AsyncTransformer(nn.Module):
             layer_params = []
 
             # Collect all parameters from this layer
-            for param in layer.parameters():
+            for p_name, param in layer.named_parameters():
                 if param.requires_grad:
                     layer_params.append(param)
+                    full_name = f"layers.{i}.{p_name}"
+                    bucketed_param_names.add(full_name)
+                    print(f"parameter bucketed: {full_name}, shape: {param.shape}")
+                    
 
             if layer_params:
                 bucket = ParameterBucket(layer_params, i, dp_group)
@@ -411,7 +434,7 @@ class AsyncTransformer(nn.Module):
         for i in range(len(bucket_groups) - 1):
             bucket_groups[i].next_bucket_group = bucket_groups[i + 1]
 
-        return bucket_groups
+        return bucket_groups, bucketed_param_names
 
     def start_prefetch_pipeline(self):
         """Start the parameter prefetch pipeline"""
@@ -423,6 +446,8 @@ class AsyncTransformer(nn.Module):
         self.start_prefetch_pipeline()
 
         x = self.embedding(input_ids)
+        # Ensure output is in bfloat16 to match the rest of the model
+        x = x.to(torch.bfloat16)
 
         # Forward through layers (bucket groups handle async prefetching)
         for layer in self.layers:
@@ -431,7 +456,7 @@ class AsyncTransformer(nn.Module):
         return self.output_proj(x)
 
 
-class AsyncOptimizer:
+class AsyncOptimizer(torch.optim.Optimizer):
     """Bucket-based optimizer with async gradient communication and layer-wise updates"""
 
     def __init__(self, model: AsyncTransformer, lr: float = 1e-4):
@@ -448,6 +473,7 @@ class AsyncOptimizer:
 
         # Track which buckets have completed gradient reduce-scatter
         self.ready_for_update: Dict[int, bool] = {}
+        super().__init__(self.master_params.values(), {"lr": lr})
 
     def zero_grad(self):
         """Zero all gradients"""
@@ -514,21 +540,14 @@ class AsyncOptimizer:
     def _update_non_fsdp_parameters(self):
         """Update parameters not managed by FSDP buckets"""
         with torch.no_grad():
-            for param in self.model.parameters():
+            for p_name, param in self.model.named_parameters():
                 if param.grad is not None:
                     # Check if this parameter is managed by bucket system
-                    is_bucketed = False
-                    for bucket_group in self.model.bucket_groups:
-                        for bucket in bucket_group.buckets:
-                            if any(p is param for p in bucket.params):
-                                is_bucketed = True
-                                break
-                        if is_bucketed:
-                            break
-
-                    # Update non-bucketed parameters directly
-                    if not is_bucketed:
-                        param -= self.lr * param.grad
+                    if p_name not in self.model.bucketed_param_names:
+                        print("Not bucketed parameter:", p_name)
+                        # Use non-in-place operation to avoid torch.export issues
+                        updated = param.data - self.lr * param.grad.detach()
+                        param.data.copy_(updated.to(torch.bfloat16))
 
 
 def create_async_transformer(
@@ -628,4 +647,5 @@ if __name__ == "__main__":
         labels = torch.randint(0, 1000, (32, 64), dtype=torch.int64)
 
         export = torch.export.export(training_step_module, args=(input_ids, labels), strict=False)
-        print(export.graph.python_code("self").src)
+        with open("async_model_exported.py", "w") as f:
+            f.write(export.graph.python_code("self").src)
