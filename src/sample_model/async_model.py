@@ -8,14 +8,22 @@ from torch.distributed._functional_collectives import (
     all_gather_tensor,
     all_reduce,
     reduce_scatter_tensor,
-    wait_tensor,
+    wait_tensor as ft_wait_tensor,
+    AsyncCollectiveTensor
 )
 
 from sample_model.fake import FakeStore
 from sample_model.parallel_dims import ParallelDims
 
 # Hack to disable immediate waiting of functional collectives in tracing
-torch.distributed._functional_collectives._maybe_wrap_tensor = lambda x: x
+#torch.distributed._functional_collectives._maybe_wrap_tensor = lambda x: x
+torch.distributed._functional_collectives._are_we_tracing = lambda: False
+def wait_tensor(tensor):
+    """Wait for a functional collective tensor to complete"""
+    if isinstance(tensor, AsyncCollectiveTensor):
+        return tensor.wait()
+    return tensor  # If not an async tensor, just return it directly
+
 
 
 class ParameterBucket:
@@ -59,7 +67,6 @@ class ParameterBucket:
         for param in self.params:
             numel = param.numel()
             param_view = self.param_data[offset : offset + numel].view(param.shape)
-            param_view.copy_(param.data)
             param.data = param_view
             offset += numel
 
@@ -68,18 +75,23 @@ class ParameterBucket:
         if self.dp_group is not None and self.dp_size > 1:
             # Use functional all_gather_tensor - it returns an AsyncCollectiveTensor
             # that will be waited on when first used
+            print("Bucket", self.bucket_id, "starting parameter all-gather")
             self.param_data = all_gather_tensor(
                 self.param_shard, gather_dim=0, group=self.dp_group
             )
-            setattr(self.param_data, "needs_wait", True)
 
     def finish_param_allgather(self):
         """Wait for parameter all-gather to complete"""
         # With functional collectives, the tensor is automatically synchronized
         # when first used, but we can explicitly wait if needed
         if self.dp_group is not None and self.dp_size > 1:
+            print("Bucket", self.bucket_id, "finishing parameter all-gather")
             # If param_data is an AsyncCollectiveTensor, wait for it
+            assert isinstance(self.param_data, AsyncCollectiveTensor), (
+                f"Bucket {self.bucket_id} tried to wait on a nonexisting collective"
+            )
             self.param_data = wait_tensor(self.param_data)
+            self
             
 
     def start_grad_reduce_scatter(self):
@@ -170,6 +182,9 @@ class AsyncRowParallelLinear(torch.autograd.Function):
             input = input.to(weight.dtype)
         # Local matrix multiplication
         output = F.linear(input, weight)
+        if tp_group is not None:
+            # Start async all-reduce of output using functional collective
+            output = wait_tensor(all_reduce(output, "sum", group=tp_group))
         return output
 
     @staticmethod
@@ -192,7 +207,7 @@ class AsyncRowParallelLinear(torch.autograd.Function):
         # This computation overlaps with the communication!
         grad_weight = grad_output.transpose(-2, -1).matmul(input)
 
-        wait_tensor(grad_input)  # Ensure grad_input is ready before returning
+        grad_input = wait_tensor(grad_input)  # Ensure grad_input is ready before returning
 
         return grad_input, grad_weight, None
 
@@ -410,7 +425,7 @@ class AsyncTransformer(nn.Module):
 
         # Group parameters by layer (each layer = one bucket for simplicity)
         # In reverse order to match backward pass order
-        for i, layer in enumerate(reversed(self.layers)):
+        for i, layer in enumerate(self.layers):
             layer_params = []
 
             # Collect all parameters from this layer
